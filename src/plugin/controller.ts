@@ -138,12 +138,7 @@ export class SyncController {
   /** Reasons not to run at all, checked before anything touches the network. */
   private async blocker(settings: Settings): Promise<string | null> {
     if (this.deps.skipEnvironmentChecks) return null;
-    if (secretStorageEncryption() === "plaintext") {
-      return (
-        "Obsidian cannot encrypt secrets on this system (no keyring is running), so the iCloud " +
-        "session would be stored in plain text. Start gnome-keyring or KWallet and restart Obsidian."
-      );
-    }
+    if (secretStorageEncryption() === "plaintext") return plaintextSecretsMessage();
     if (await obsisyncManages(this.deps.vaultRoot)) {
       return "obsisync is set up to sync this same folder. Two sync tools on one vault would fight; stop obsisync first.";
     }
@@ -458,6 +453,26 @@ export class SyncController {
     this.newlyIgnored = [];
     this.syncNow();
   }
+}
+
+/**
+ * Electron picks its Linux secret backend from the desktop session and only
+ * recognises GNOME and KDE. Under anything else (niri, Hyprland, Sway…) it
+ * falls back to plaintext even with a keyring running — found on the
+ * developer's niri machine, where gnome-keyring was serving the Secret Service.
+ */
+function plaintextSecretsMessage(): string {
+  const desktop = process.env.XDG_CURRENT_DESKTOP;
+  if (process.platform === "linux") {
+    return (
+      "Obsidian is storing secrets unencrypted, so the iCloud session is not saved. " +
+      `On Linux, Electron only detects the keyring under GNOME or KDE${desktop ? ` (this session: ${desktop})` : ""}. ` +
+      "If a keyring is running, add the line --password-store=gnome-libsecret (gnome-keyring, KeePassXC) " +
+      "or --password-store=kwallet6 (KWallet) to ~/.config/obsidian/user-flags.conf and restart Obsidian. " +
+      "Otherwise start a keyring first."
+    );
+  }
+  return "Obsidian cannot encrypt secrets on this system, so the iCloud session is not saved.";
 }
 
 function errorText(e: unknown): string {
