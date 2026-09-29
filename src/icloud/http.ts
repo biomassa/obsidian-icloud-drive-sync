@@ -186,10 +186,14 @@ export class HttpClient {
       if (v !== undefined) target.searchParams.set(k, String(v));
     }
 
+    // python-requests' default headers, in its order. Later spreads override a
+    // value in place without moving it, as requests does, so the wire order
+    // matches the client Apple accepts today.
     const headers: Record<string, string> = {
-      Accept: "*/*", // what python-requests sends, which Apple accepts today
-      "Accept-Encoding": ACCEPT_ENCODING, // python-requests' list, as far as this Node can decode
-
+      "User-Agent": this.defaultHeaders["User-Agent"] ?? "icloud-drive-sync",
+      "Accept-Encoding": ACCEPT_ENCODING,
+      Accept: "*/*",
+      Connection: "keep-alive",
       ...this.defaultHeaders,
       ...opts.headers,
     };
