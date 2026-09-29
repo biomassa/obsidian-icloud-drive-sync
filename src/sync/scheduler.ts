@@ -103,6 +103,12 @@ export class SyncScheduler {
     this.request("manual");
   }
 
+  /** One full cycle now, without starting the poll: for "sync automatically" turned off. */
+  runOnce(): void {
+    if (this.active) return this.request("manual");
+    if (!this.running) this.running = this.execute("manual");
+  }
+
   /** The engine wrote these keys; their file events are ours, not the user's. */
   markWritten(keys: Iterable<string>): void {
     const until = this.opt.timers.now() + this.opt.echoMs;

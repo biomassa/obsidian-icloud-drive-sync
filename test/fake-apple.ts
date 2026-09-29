@@ -16,6 +16,8 @@ export interface FakeAppleOptions {
   code?: string;
   /** When true, signin/complete trusts immediately (a valid trust token was sent). */
   trustedAlready?: boolean;
+  /** When true, signin/complete rejects the password. */
+  wrongPassword?: boolean;
 }
 
 function res(
@@ -42,10 +44,18 @@ export class FakeApple {
   sessionValid = false;
   private readonly code: string;
   private readonly trustedAlready: boolean;
+  private readonly wrongPassword: boolean;
 
   constructor(options: FakeAppleOptions = {}) {
     this.code = options.code ?? "123456";
     this.trustedAlready = options.trustedAlready ?? false;
+    this.wrongPassword = options.wrongPassword ?? false;
+  }
+
+  /** Invalidate the session, as Apple does when a session expires. */
+  expireSession() {
+    this.sessionValid = false;
+    this.trusted = false;
   }
 
   count(method: string, pathFragment: string): number {
@@ -78,6 +88,9 @@ export class FakeApple {
         iteration: 1000,
         protocol: "s2k",
       });
+    }
+    if (p.endsWith("/signin/complete") && this.wrongPassword) {
+      return res(401, { serviceErrors: [{ code: "-20101", message: "Your Apple ID or password was incorrect." }] });
     }
     if (p.endsWith("/signin/complete")) {
       const sessionHeaders = {
