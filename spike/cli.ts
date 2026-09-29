@@ -56,8 +56,10 @@ interface ObsisyncConfig {
 }
 
 function obsisyncConfig(): ObsisyncConfig {
-  const path = join(homedir(), ".config/obsisync/config.json");
-  return JSON.parse(readFileSync(path, "utf8"));
+  // Renamed when the plugin took over the vault; the spike still reads it.
+  const live = join(homedir(), ".config/obsisync/config.json");
+  const parked = `${live}.disabled-for-icloud-plugin`;
+  return JSON.parse(readFileSync(existsSync(live) ? live : parked, "utf8"));
 }
 
 function keyringPassword(account: string): string {
