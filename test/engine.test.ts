@@ -313,3 +313,68 @@ test("cancel stops between files; the rest is done by the next sync", async () =
   assert.equal(next.status, "ok");
   sameTrees(s.local, s.remote);
 });
+
+test("a fresh vault's first sync takes iCloud's copies; its defaults go to the trash", async () => {
+  const clock = new Clock();
+  const local = new FakeLocal(clock);
+  const remote = new FakeRemote(clock);
+  remote.put(".obsidian/app.json", '{"real":"settings","vimMode":true}');
+  remote.put(".obsidian/community-plugins.json", '["dataview"]');
+  remote.put("Notes/idea.md", "an idea");
+  clock.tick(60_000);
+  // Obsidian just created this vault: defaults, newer than iCloud's files.
+  local.put(".obsidian/app.json", "{}");
+  local.put(".obsidian/community-plugins.json", '["icloud-drive-sync"]');
+  local.put(".obsidian/appearance.json", '{"theme":"obsidian"}'); // only here
+  const merges: string[] = [];
+  const engine = new SyncEngine({
+    local,
+    remote,
+    store: new MemoryStateStore(),
+    filter: new IgnoreFilter(),
+    options: {
+      now: clock.now,
+      freshVault: {
+        configPrefix: ".obsidian/",
+        merge: (key, l, r) => {
+          if (key !== ".obsidian/community-plugins.json") return null;
+          merges.push(key);
+          const ids = [...JSON.parse(str(r)), ...JSON.parse(str(l))];
+          return new TextEncoder().encode(JSON.stringify([...new Set(ids)]));
+        },
+      },
+    },
+  });
+  await engine.runCycle();
+  assert.equal(local.get(".obsidian/app.json"), '{"real":"settings","vimMode":true}', "iCloud's settings won");
+  assert.ok(local.trashed.some((t) => t.key === ".obsidian/app.json" && str(t.data) === "{}"), "the default is recoverable");
+  assert.equal(local.get("Notes/idea.md"), "an idea");
+  assert.ok(![...local.files.keys()].some((k) => k.includes("conflict")), "no conflict-copy clutter");
+  assert.deepEqual(merges, [".obsidian/community-plugins.json"]);
+  assert.equal(local.get(".obsidian/community-plugins.json"), '["dataview","icloud-drive-sync"]');
+  clock.tick(10_000);
+  await engine.runCycle();
+  assert.equal(remote.get(".obsidian/community-plugins.json"), '["dataview","icloud-drive-sync"]', "the merge was uploaded");
+  assert.equal(remote.get(".obsidian/appearance.json"), '{"theme":"obsidian"}');
+  sameTrees(local, remote);
+});
+
+test("a vault that already holds notes is not treated as fresh", async () => {
+  const clock = new Clock();
+  const local = new FakeLocal(clock);
+  const remote = new FakeRemote(clock);
+  remote.put(".obsidian/app.json", '{"older":1}');
+  clock.tick(60_000);
+  local.put(".obsidian/app.json", '{"newer":22}');
+  local.put("My note.md", "mine");
+  const engine = new SyncEngine({
+    local,
+    remote,
+    store: new MemoryStateStore(),
+    filter: new IgnoreFilter(),
+    options: { now: clock.now, freshVault: { configPrefix: ".obsidian/" } },
+  });
+  await engine.runCycle();
+  assert.equal(local.get(".obsidian/app.json"), '{"newer":22}', "the newer version keeps the name");
+  assert.ok([...local.files.keys()].some((k) => k.startsWith(".obsidian/app (conflict")), "and iCloud's is kept aside");
+});

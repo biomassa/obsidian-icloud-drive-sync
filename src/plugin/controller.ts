@@ -69,6 +69,7 @@ export interface ControllerDeps {
   secrets: SecretStorageLike;
   ui: ControllerUI;
   /** Tests substitute these. */
+  platform?: NodeJS.Platform;
   transport?: Transport;
   openRemote?: (auth: ICloudAuth, settings: Settings, filter: IgnoreFilter) => Promise<Remote>;
   openLocal?: (root: string, filter: IgnoreFilter) => LocalFs;
@@ -137,6 +138,13 @@ export class SyncController {
 
   /** Reasons not to run at all, checked before anything touches the network. */
   private async blocker(settings: Settings): Promise<string | null> {
+    if ((this.deps.platform ?? process.platform) === "darwin") {
+      // Checked even in tests: this is a correctness rule, not an environment probe.
+      return (
+        "On a Mac, iCloud Drive already syncs this vault by itself. Running this plugin too would " +
+        "sync the same folder twice, with each copy fighting the other; it is meant for Linux and Windows."
+      );
+    }
     if (this.deps.skipEnvironmentChecks) return null;
     if (secretStorageEncryption() === "plaintext") return plaintextSecretsMessage();
     if (await obsisyncManages(this.deps.vaultRoot)) {
@@ -275,7 +283,14 @@ export class SyncController {
       store: this.deps.stateStore ?? new FileStateStore(stateFilePath(this.deps.vaultRoot)),
       filter,
       log: (level, message) => this.record(level, message),
-      options: { deletionThreshold: settings.deletionThreshold },
+      options: {
+        deletionThreshold: settings.deletionThreshold,
+        freshVault: {
+          configPrefix: `${this.deps.configDir}/`,
+          merge: (key, localData, remoteData) =>
+            key === `${this.deps.configDir}/community-plugins.json` ? mergePluginLists(localData, remoteData) : null,
+        },
+      },
     });
     this.pendingDeletions = await this.engine.pendingDeletions();
     this.scheduler = new SyncScheduler((trigger, options) => this.cycle(trigger, options), {
@@ -457,6 +472,23 @@ export class SyncController {
     this.record("info", `Stopped tracking ${this.newlyIgnored.length} ignored file(s); both copies kept`);
     this.newlyIgnored = [];
     this.syncNow();
+  }
+}
+
+/**
+ * The enabled-plugins list on a new vault's first sync: iCloud's list, plus
+ * whatever this vault enabled (this plugin, at least). Taking iCloud's alone
+ * would disable this plugin at the next start. Null if either is not a list.
+ */
+export function mergePluginLists(localData: Uint8Array, remoteData: Uint8Array): Uint8Array | null {
+  try {
+    const local = JSON.parse(new TextDecoder().decode(localData));
+    const remote = JSON.parse(new TextDecoder().decode(remoteData));
+    if (!Array.isArray(local) || !Array.isArray(remote)) return null;
+    const merged = [...remote, ...local.filter((id) => !remote.includes(id))];
+    return new TextEncoder().encode(JSON.stringify(merged, null, 2));
+  } catch {
+    return null;
   }
 }
 

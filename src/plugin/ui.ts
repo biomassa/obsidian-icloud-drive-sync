@@ -291,6 +291,8 @@ export interface SettingsHost extends Plugin {
 export class SettingsTab extends PluginSettingTab {
   private readonly host: SettingsHost;
   private unsubscribe: (() => void) | null = null;
+  /** Vault folders found by the last "Find vaults", kept while the tab is open. */
+  private found: string[] | null = null;
 
   constructor(app: App, host: SettingsHost) {
     super(app, host);
@@ -361,18 +363,20 @@ export class SettingsTab extends PluginSettingTab {
           }),
       );
     folder.addButton((b) =>
-      b.setButtonText("Find vaults").onClick(async () => {
-        b.setDisabled(true);
-        try {
-          const found = await controller.findVaults();
-          if (!found.length) new Notice("No Obsidian vaults found in iCloud Drive");
-          else new Notice(`Vaults in iCloud Drive:\n${found.join("\n")}`, 15_000);
-        } catch (e) {
-          new Notice(`Could not list iCloud Drive: ${e instanceof Error ? e.message : String(e)}`);
-        } finally {
-          b.setDisabled(false);
-        }
-      }),
+      b
+        .setButtonText("Find vaults")
+        .setDisabled(!controller.isSignedIn)
+        .setTooltip(controller.isSignedIn ? "List the Obsidian vaults in your iCloud Drive" : "Sign in first")
+        .onClick(async () => {
+          b.setDisabled(true).setButtonText("Searching…");
+          try {
+            this.found = await controller.findVaults();
+            if (!this.found.length) new Notice("No Obsidian vaults found in iCloud Drive");
+          } catch (e) {
+            new Notice(`Could not list iCloud Drive: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          this.display();
+        }),
     );
     folder.addButton((b) =>
       b.setButtonText("Apply").onClick(async () => {
@@ -380,6 +384,26 @@ export class SettingsTab extends PluginSettingTab {
         new Notice("iCloud Drive Sync restarted with the new folder");
       }),
     );
+    if (this.found?.length) {
+      new Setting(containerEl)
+        .setName("Vaults in your iCloud Drive")
+        .setDesc(
+          "Choose one to sync with this vault. If this vault is new and empty, the first sync " +
+            "simply downloads it; otherwise both sides are compared file by file and nothing is overwritten.",
+        )
+        .addDropdown((d) => {
+          d.addOption("", "Choose a vault…");
+          for (const path of this.found!) d.addOption(path, path);
+          d.setValue(this.found!.includes(settings.icloudVaultPath) ? settings.icloudVaultPath : "");
+          d.onChange(async (path) => {
+            if (!path || path === settings.icloudVaultPath) return;
+            settings.icloudVaultPath = path;
+            await this.host.saveSettings(true);
+            new Notice(`Syncing with ${path} in iCloud Drive`);
+            this.display();
+          });
+        });
+    }
 
     new Setting(containerEl).setHeading().setName("Syncing");
     new Setting(containerEl)

@@ -47,6 +47,24 @@ export interface EngineOptions {
   /** Persist the base after this many completed actions, not only at the end. */
   saveEvery?: number;
   now?: () => number;
+  /**
+   * A vault that has never synced and holds nothing but its config folder is
+   * a fresh setup: iCloud's copy wins every file present on both sides.
+   * Without this, the new vault's just-created default settings — newer than
+   * iCloud's — would win and push the user's real settings aside.
+   */
+  freshVault?: FreshVaultPolicy;
+}
+
+export interface FreshVaultPolicy {
+  /** The vault's config folder with a trailing slash, e.g. ".obsidian/". */
+  configPrefix: string;
+  /**
+   * Combine both versions instead of taking iCloud's, for files where each side
+   * holds something the other needs (the enabled-plugins list). Return null to
+   * take iCloud's version as usual.
+   */
+  merge?: (key: string, local: Uint8Array, remote: Uint8Array) => Uint8Array | null;
 }
 
 export interface CycleResult {
@@ -104,12 +122,14 @@ export class SyncEngine {
   private readonly store: StateStore;
   private readonly filter: IgnoreFilter;
   private readonly log: Logger;
-  private readonly opt: Required<EngineOptions>;
+  private readonly opt: Required<Omit<EngineOptions, "freshVault">> & Pick<EngineOptions, "freshVault">;
   private state: SyncState | null = null;
   private readonly confirmed = new Set<string>();
   private allowManyConflicts = false;
   private running = false;
   private cancelRequested = false;
+  /** True during a cycle judged to be a fresh vault's first sync. */
+  private freshThisCycle = false;
   /** The last iCloud scan, kept current with this engine's own remote writes. */
   private remoteCache: { entries: Map<string, RemoteEntry>; skipped: RemoteScan["skipped"]; at: number } | null = null;
 
@@ -293,6 +313,16 @@ export class SyncEngine {
     }
     const { plan } = planned;
     this.allowManyConflicts = false;
+    const fresh = this.opt.freshVault;
+    this.freshThisCycle = Boolean(
+      fresh &&
+        state.base.size === 0 &&
+        localScan.entries.size > 0 &&
+        [...localScan.entries.keys()].every((k) => k.startsWith(fresh.configPrefix)),
+    );
+    if (this.freshThisCycle) {
+      this.log("info", "This vault is new here: iCloud's copy wins wherever both sides hold a file");
+    }
 
     state.pendingDeletions = new Map(plan.parked.map((p) => [p.key, p]));
     result.parked = plan.parked;
@@ -422,6 +452,40 @@ export class SyncEngine {
     });
   }
 
+  /**
+   * A fresh vault's first sync, file on both sides: iCloud's version takes the
+   * path; the local default goes to the trash (recoverable, no conflict-copy
+   * clutter). A merge, where configured, keeps both sides' content instead.
+   */
+  private async freshVaultTakesRemote(
+    key: string,
+    local: LocalEntry,
+    remote: RemoteEntry,
+    remoteData: Uint8Array,
+    state: SyncState,
+    result: CycleResult,
+  ): Promise<string> {
+    const now = () => this.opt.now();
+    await this.assertLocalUnchanged(local);
+    const remoteHash = sha256(remoteData);
+    const merged = this.opt.freshVault?.merge?.(key, await this.local.read(key), remoteData) ?? null;
+    if (merged) {
+      // Recorded as iCloud's content, so the merged file reads as a local edit
+      // and the next sync uploads it.
+      const written = await this.local.write(key, merged);
+      result.localWrites.push({ key, hash: sha256(merged) });
+      this.record(state, key, { hash: remoteHash, size: remoteData.length }, written, now(), remote);
+      this.log("info", `Merged ${key} with iCloud's copy (new vault)`);
+      return "merged with iCloud's copy";
+    }
+    await this.local.trash(key);
+    const written = await this.local.write(key, remoteData, remote.modifiedMs || undefined);
+    result.localWrites.push({ key, hash: remoteHash });
+    this.record(state, key, { hash: remoteHash, size: remoteData.length }, written, now(), remote);
+    this.log("info", `Took iCloud's ${key}; this new vault's default is in the trash`);
+    return "took iCloud's copy (new vault)";
+  }
+
   /** Conflict where this device's version is newer: it keeps the name, iCloud's goes aside. */
   private async conflictLocalWins(
     key: string,
@@ -516,6 +580,9 @@ export class SyncEngine {
             action.remote,
           );
           return "identical on both sides";
+        }
+        if (this.freshThisCycle && !("base" in action && action.base)) {
+          return this.freshVaultTakesRemote(action.key, action.local, action.remote, remoteData, state, result);
         }
         // Keep both. The newer version keeps the original name; the other is
         // kept under a conflict name, on both sides. On a first run there is no

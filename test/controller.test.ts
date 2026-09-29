@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { SyncController, type ControllerUI, type Status } from "../src/plugin/controller.ts";
+import { SyncController, mergePluginLists, type ControllerUI, type Status } from "../src/plugin/controller.ts";
 import { SESSION_SECRET_ID, type SecretStorageLike } from "../src/plugin/environment.ts";
 import { DEFAULT_SETTINGS, sanitizeSettings, pluginIgnorePatterns, type Settings } from "../src/plugin/settings.ts";
 import { IgnoreFilter } from "../src/sync/filters.ts";
@@ -25,7 +25,13 @@ class MemorySecrets implements SecretStorageLike {
   }
 }
 
-function harness(opts: { apple?: FakeApple; secrets?: MemorySecrets; codes?: (string | null)[]; settings?: Partial<Settings> } = {}) {
+function harness(opts: {
+  apple?: FakeApple;
+  secrets?: MemorySecrets;
+  codes?: (string | null)[];
+  settings?: Partial<Settings>;
+  platform?: NodeJS.Platform;
+} = {}) {
   const apple = opts.apple ?? new FakeApple();
   const secrets = opts.secrets ?? new MemorySecrets();
   const timers = new VirtualTimers();
@@ -57,6 +63,7 @@ function harness(opts: { apple?: FakeApple; secrets?: MemorySecrets; codes?: (st
     stateStore: new MemoryStateStore(),
     timers,
     skipEnvironmentChecks: true,
+    platform: opts.platform ?? "linux",
   });
   controller.onStatus((s) => statuses.push(s));
   return { apple, secrets, timers, local, remote, notes, statuses, controller, prompts };
@@ -189,4 +196,22 @@ test("plugin code and this plugin's folder are not synced; plugin settings are",
   assert.equal(f.ignores(".obsidian/plugins/icloud-drive-sync/data.json"), true, "our own folder never syncs");
   const withCode = new IgnoreFilter(pluginIgnorePatterns({ ...DEFAULT_SETTINGS, syncPluginCode: true }, ".obsidian", "x"));
   assert.equal(withCode.ignores(".obsidian/plugins/obsidian-tasks-plugin/main.js"), false);
+});
+
+test("on a Mac the plugin refuses: iCloud Drive already syncs the vault there", async () => {
+  const h = harness({ platform: "darwin" });
+  await h.controller.start();
+  assert.equal(h.controller.status.kind, "blocked");
+  assert.match((h.controller.status as { message: string }).message, /iCloud Drive already syncs/);
+  assert.equal(h.apple.calls.length, 0, "nothing contacted");
+  await assert.doesNotReject(async () => assert.equal(await h.controller.signIn("pw"), false));
+  assert.equal(h.apple.calls.length, 0, "not even a sign-in");
+});
+
+test("the enabled-plugins merge keeps iCloud's list and adds this vault's", () => {
+  const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+  const merged = mergePluginLists(enc(["icloud-drive-sync", "dataview"]), enc(["dataview", "calendar"]));
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(merged!)), ["dataview", "calendar", "icloud-drive-sync"]);
+  assert.equal(mergePluginLists(enc({ not: "a list" }), enc([])), null);
+  assert.equal(mergePluginLists(new TextEncoder().encode("{broken"), enc([])), null);
 });
