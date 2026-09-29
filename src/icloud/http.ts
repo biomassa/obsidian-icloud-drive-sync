@@ -11,7 +11,12 @@
  * wedges it with no recovery short of a restart (see obsisync's session.py).
  */
 import { request as httpsRequest } from "node:https";
+import * as zlib from "node:zlib";
 import { gunzipSync, inflateSync, brotliDecompressSync } from "node:zlib";
+
+// zstd arrived in Node 22.15; offer it only where it can be decoded.
+const zstdDecompress = (zlib as { zstdDecompressSync?: (b: Buffer) => Buffer }).zstdDecompressSync;
+const ACCEPT_ENCODING = zstdDecompress ? "gzip, deflate, zstd" : "gzip, deflate";
 
 import type { CookieJar } from "./cookies.ts";
 
@@ -80,6 +85,7 @@ export function nodeTransport(options: NodeTransportOptions = {}): Transport {
               if (enc === "gzip") body = gunzipSync(body);
               else if (enc === "deflate") body = inflateSync(body);
               else if (enc === "br") body = brotliDecompressSync(body);
+              else if (enc === "zstd" && zstdDecompress) body = zstdDecompress(body);
             } catch (e) {
               reject(new NetworkError("could not decode response body", e));
               return;
@@ -122,6 +128,34 @@ export function nodeTransport(options: NodeTransportOptions = {}): Transport {
     });
 }
 
+/**
+ * JSON exactly as Python's `json.dumps` writes it with default settings, which
+ * is what python-requests sends for `json=`: ", " and ": " separators, and
+ * non-ASCII escaped as \uXXXX. Apple's servers parse either form, but
+ * matching the client that works byte for byte removes one variable when a
+ * sign-in is rejected.
+ */
+export function pythonJson(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("non-finite number in JSON body");
+    return String(value);
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value).replace(
+      /[\u007f-\uffff]/g,
+      (ch) => "\\u" + ch.charCodeAt(0).toString(16).padStart(4, "0"),
+    );
+  }
+  if (Array.isArray(value)) return "[" + value.map(pythonJson).join(", ") + "]";
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined);
+    return "{" + entries.map(([k, v]) => `${pythonJson(k)}: ${pythonJson(v)}`).join(", ") + "}";
+  }
+  throw new TypeError(`cannot serialize ${typeof value} to JSON`);
+}
+
 export interface RequestOptions {
   params?: Record<string, string | number | boolean | undefined>;
   headers?: Record<string, string>;
@@ -154,13 +188,14 @@ export class HttpClient {
 
     const headers: Record<string, string> = {
       Accept: "*/*", // what python-requests sends, which Apple accepts today
-      "Accept-Encoding": "gzip, deflate, br",
+      "Accept-Encoding": ACCEPT_ENCODING, // python-requests' list, as far as this Node can decode
+
       ...this.defaultHeaders,
       ...opts.headers,
     };
     let body: Uint8Array | undefined;
     if (opts.json !== undefined) {
-      body = new TextEncoder().encode(JSON.stringify(opts.json));
+      body = new TextEncoder().encode(pythonJson(opts.json));
       if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/json";
     } else if (typeof opts.body === "string") {
       body = new TextEncoder().encode(opts.body);
