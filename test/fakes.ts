@@ -4,7 +4,7 @@
  */
 import { AuthRequiredError } from "../src/icloud/errors.ts";
 import { IgnoreFilter, caseCollisions } from "../src/sync/filters.ts";
-import type { LocalEntry, LocalFs, LocalScan, Remote, RemoteEntry, RemoteScan } from "../src/sync/types.ts";
+import { ChangedSinceScanError, type LocalEntry, type LocalFs, type LocalScan, type Remote, type RemoteEntry, type RemoteScan } from "../src/sync/types.ts";
 
 export const text = (s: string) => new TextEncoder().encode(s);
 export const str = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -21,7 +21,7 @@ interface LocalFile {
   data: Uint8Array;
   mtimeMs: number;
   ctimeMs: number;
-  ino: number;
+  ino: string;
 }
 
 let nextIno = 1;
@@ -42,7 +42,7 @@ export class FakeLocal implements LocalFs {
 
   /** A user write: editors save via a new file, so a new inode, as on disk. */
   put(key: string, content: string, mtimeMs = this.clock.now()) {
-    this.files.set(key, { data: text(content), mtimeMs, ctimeMs: this.clock.now(), ino: nextIno++ });
+    this.files.set(key, { data: text(content), mtimeMs, ctimeMs: this.clock.now(), ino: String(nextIno++) });
   }
 
   /** A user rename: same inode, new ctime, mtime untouched. */
@@ -57,7 +57,7 @@ export class FakeLocal implements LocalFs {
     return f && str(f.data);
   }
 
-  async scan(): Promise<LocalScan> {
+  async scan(tracked?: ReadonlySet<string>): Promise<LocalScan> {
     if (this.unreadable) throw new Error("EACCES: permission denied, scandir 'Projects'");
     const entries = new Map<string, LocalEntry>();
     for (const [key, f] of this.files) {
@@ -65,7 +65,7 @@ export class FakeLocal implements LocalFs {
       entries.set(key, { key, name: key, size: f.data.length, mtimeMs: f.mtimeMs, ctimeMs: f.ctimeMs, ino: f.ino });
     }
     const skipped: LocalScan["skipped"] = [];
-    for (const [key, kept] of caseCollisions(entries.keys())) {
+    for (const [key, kept] of caseCollisions(entries.keys(), tracked)) {
       entries.delete(key);
       skipped.push({ key, reason: `case collision with ${kept}` });
     }
@@ -88,7 +88,7 @@ export class FakeLocal implements LocalFs {
 
   async write(key: string, data: Uint8Array, mtimeMs?: number) {
     // Atomic write via a temp file: a new inode, ctime now.
-    const f = { data: data.slice(), mtimeMs: mtimeMs ?? this.clock.now(), ctimeMs: this.clock.now(), ino: nextIno++ };
+    const f = { data: data.slice(), mtimeMs: mtimeMs ?? this.clock.now(), ctimeMs: this.clock.now(), ino: String(nextIno++) };
     this.files.set(key, f);
     return { size: f.data.length, mtimeMs: f.mtimeMs, ctimeMs: f.ctimeMs, ino: f.ino };
   }
@@ -163,11 +163,17 @@ export class FakeRemote implements Remote {
     return { key, size: f.data.length, modifiedMs: f.modifiedMs, etag: f.etag, docId: f.docId, handle: key };
   }
 
+  /** Runs once after the next scan: simulates another device editing mid-cycle. */
+  afterScan: (() => void) | null = null;
+
   async scan(): Promise<RemoteScan> {
     this.tick();
     if (this.truncated) throw new Error("listing of Projects returned 3 of 30 items");
     const entries = new Map<string, RemoteEntry>();
     for (const [key, f] of this.files) if (!this.filter.ignores(key)) entries.set(key, this.entry(key, f));
+    const hook = this.afterScan;
+    this.afterScan = null;
+    hook?.();
     return { entries };
   }
 
@@ -186,10 +192,18 @@ export class FakeRemote implements Remote {
     this.tick();
     // Upload first, replace second: a failure leaves the old copy intact.
     if (this.failUpload.has(key)) throw new Error(`network error uploading ${key}`);
+    // Live semantics (PLAN.md): replace is an in-place update of the same
+    // document, refused if the etag moved since the scan; a new file is
+    // refused if the name is taken.
     const current = this.files.get(key);
-    if (current && existing) this.trashed.push({ key, data: current.data });
-    else if (current && !existing) throw new Error(`${key} already exists on iCloud`);
-    const f = { data: data.slice(), etag: this.nextEtag(), docId: `doc-${++this.seq}`, modifiedMs: mtimeMs };
+    if (existing) {
+      if (!current || current.docId !== existing.docId) throw new ChangedSinceScanError(`${key} was moved or deleted`);
+      if (current.etag !== existing.etag) throw new ChangedSinceScanError(`${key} changed on iCloud`);
+    } else if (current) {
+      throw new Error(`Uniqueness constraint violation: ${key}`);
+    }
+    const docId = existing ? existing.docId : `doc-${++this.seq}`;
+    const f = { data: data.slice(), etag: this.nextEtag(), docId, modifiedMs: mtimeMs };
     this.files.set(key, f);
     return this.entry(key, f);
   }
@@ -197,7 +211,8 @@ export class FakeRemote implements Remote {
   async move(entry: RemoteEntry, toKey: string): Promise<RemoteEntry> {
     this.tick();
     const f = this.files.get(entry.key);
-    if (!f) throw new Error(`gone: ${entry.key}`);
+    if (!f || f.docId !== entry.docId) throw new ChangedSinceScanError(`${entry.key} was moved or deleted`);
+    if (f.etag !== entry.etag) throw new ChangedSinceScanError(`${entry.key} changed on iCloud`);
     if (this.files.has(toKey)) throw new Error(`${toKey} already exists on iCloud`);
     this.files.delete(entry.key);
     const moved = { ...f, etag: this.nextEtag() };
@@ -209,6 +224,8 @@ export class FakeRemote implements Remote {
     this.tick();
     const f = this.files.get(entry.key);
     if (!f) return;
+    // A stale etag is refused (the adapter reads Apple's silent no-op as this).
+    if (f.etag !== entry.etag) throw new ChangedSinceScanError(`${entry.key} changed on iCloud`);
     this.files.delete(entry.key);
     this.trashed.push({ key: entry.key, data: f.data });
   }

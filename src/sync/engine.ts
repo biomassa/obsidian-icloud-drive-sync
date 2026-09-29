@@ -19,6 +19,7 @@ import { AuthRequiredError } from "../icloud/errors.ts";
 import type { IgnoreFilter } from "./filters.ts";
 import { needsHash, planSync, type PlanOptions } from "./planner.ts";
 import {
+  ChangedSinceScanError,
   sameStamp,
   type Abort,
   type Action,
@@ -187,7 +188,7 @@ export class SyncEngine {
 
     let localScan;
     try {
-      localScan = await this.local.scan();
+      localScan = await this.local.scan(new Set(state.base.keys()));
     } catch (e) {
       result.status = "aborted";
       result.abort = { reason: "local-scan-failed", message: errorText(e) };
@@ -272,7 +273,7 @@ export class SyncEngine {
             await this.store.save(state);
           }
         } catch (e) {
-          if (e instanceof SkipAction) {
+          if (e instanceof SkipAction || e instanceof ChangedSinceScanError) {
             result.skipped.push({ action, why: e.message });
             this.log("info", `Skipped ${describe(action)}: ${e.message}`);
           } else if (e instanceof AuthRequiredError) {

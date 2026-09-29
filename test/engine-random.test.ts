@@ -150,6 +150,18 @@ function runScenario(seed: number, rounds: number) {
             midCycle.add(sha256(text(c)));
           };
         }
+        if (chance(0.15)) {
+          remote.afterScan = () => {
+            const keys = [...remote.files.keys()];
+            if (!keys.length) return;
+            const k = pick(keys);
+            const c = content();
+            required.delete(sha256(remote.files.get(k)!.data));
+            midCycle.delete(sha256(remote.files.get(k)!.data));
+            remote.put(k, c, remote.files.get(k)!.docId); // another device, mid-cycle
+            midCycle.add(sha256(text(c)));
+          };
+        }
         if (chance(0.1)) {
           const keys = [...local.files.keys()];
           if (keys.length) remote.failUpload.add(pick(keys));
@@ -163,6 +175,7 @@ function runScenario(seed: number, rounds: number) {
         }
         const result = await engine.runCycle();
         remote.failUpload.clear();
+        remote.afterScan = null;
         local.afterScan = null;
         remote.onDownload = null;
         assert.notEqual(result.status === "aborted" && result.abort?.reason, "local-scan-failed");

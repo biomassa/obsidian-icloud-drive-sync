@@ -51,6 +51,22 @@ obsisync's `_assert_secure_keyring()` does.
      synced edit leaves the previous version in Recently Deleted. Investigate updating a
      document in place (`update/documents` against the existing document) before phase 3.
    - A replace takes ~10 s (upload, list, trash, rename); uploads ~3 s, listings ~1 s.
+
+   iCloud semantics, probed live in throwaway folders (spike `semantics`, `semantics2`,
+   `semantics3`, 2026-09-29):
+   - `update/documents` returns the new document (id, etag, name, parent) — no listing needed.
+   - Rename and move keep `docwsid`/`drivewsid`; both change the etag. `renameItems` takes the
+     full name and splits the extension itself.
+   - **A trash with a stale etag answers 200 and does nothing.** The response item's `parentId`
+     is `TRASH_ROOT` only when it really moved; check it every time.
+   - `allow_conflict: false` on a taken name fails ("Uniqueness constraint violation"): a real
+     create-if-absent.
+   - Names are case-sensitive through the web API (`Case.md` and `case.md` coexist), but Apple
+     devices usually are not, so local case collisions are still refused.
+   - **In-place update works:** `add_file` with the existing `document_id` replaces the content
+     and keeps the id, with no temp name and no Recently Deleted entry. It is unconditional —
+     `etag`, `document_etag` and `if_match` are all ignored — so the executor re-reads the etag
+     just before updating and skips if it moved (≈1 s unguarded window, last-writer-wins).
 2. **Sync engine in pure TypeScript** (no Obsidian imports; injected fs and remote):
    - plan (base state + local scan + remote scan → actions), check guards on the whole plan,
      then execute; a file is recorded synced only after its transfer succeeds

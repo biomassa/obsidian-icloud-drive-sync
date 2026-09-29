@@ -19,7 +19,8 @@ export interface LocalStamp {
   size: number;
   mtimeMs: number;
   ctimeMs?: number;
-  ino?: number;
+  /** A string: Windows file ids exceed 2^53 and would lose precision as numbers. */
+  ino?: string;
 }
 
 export function sameStamp(a: LocalStamp, b: LocalStamp): boolean {
@@ -29,6 +30,14 @@ export function sameStamp(a: LocalStamp, b: LocalStamp): boolean {
     (a.ctimeMs === undefined || b.ctimeMs === undefined || a.ctimeMs === b.ctimeMs) &&
     (a.ino === undefined || b.ino === undefined || a.ino === b.ino)
   );
+}
+
+/**
+ * Thrown by a LocalFs or Remote when the file changed after the scan. Not a
+ * failure: the executor skips the step and the next cycle decides again.
+ */
+export class ChangedSinceScanError extends Error {
+  override name = "ChangedSinceScanError";
 }
 
 export interface LocalEntry extends LocalStamp {
@@ -60,7 +69,7 @@ export interface BaseEntry {
   /** Local stamp recorded with `hash`; lets an unchanged file skip hashing. */
   localMtimeMs: number;
   localCtimeMs?: number;
-  localIno?: number;
+  localIno?: string;
   /**
    * When `hash` was computed. If the file's mtime is within the racy window of
    * this, a same-size edit in the same timestamp tick is possible, so the
@@ -79,12 +88,17 @@ export interface LocalScan {
 
 export interface RemoteScan {
   entries: Map<string, RemoteEntry>;
+  /** Keys refused, e.g. two iCloud names that normalize to the same key. Never acted on. */
+  skipped?: { key: string; reason: string }[];
 }
 
 /** Local file access. Every method works on keys; the implementation maps them to real names. */
 export interface LocalFs {
-  /** Every non-ignored file. Must throw, never return a short list, if any folder is unreadable. */
-  scan(): Promise<LocalScan>;
+  /**
+   * Every non-ignored file. Must throw, never return a short list, if any
+   * folder is unreadable. `tracked` keys win case collisions.
+   */
+  scan(tracked?: ReadonlySet<string>): Promise<LocalScan>;
   read(key: string): Promise<Uint8Array>;
   stat(key: string): Promise<LocalStamp | null>;
   /** Write atomically (temp file + rename), creating folders. Returns the stat afterwards. */

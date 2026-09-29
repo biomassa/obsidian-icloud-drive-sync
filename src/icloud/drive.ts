@@ -211,8 +211,38 @@ export class DriveClient {
    * Apple allows a conflict here: if the name is taken it creates "name 2".
    * Callers that mean to replace use `replace()`.
    */
-  async upload(folder: DriveItem, name: string, data: Uint8Array, mtimeMs = Date.now()): Promise<void> {
+  async upload(
+    folder: DriveItem,
+    name: string,
+    data: Uint8Array,
+    mtimeMs = Date.now(),
+    options: { allowConflict?: boolean } = {},
+  ): Promise<Json> {
     const zone = folder.zone || CLOUD_DOCS_ZONE;
+    const { documentId, signature } = await this.stageContent(zone, name, data);
+    const done = await this.auth.session.request("POST", `${this.documentRoot}/ws/${zone}/update/documents`, {
+      params: this.params,
+      headers: { "Content-Type": "plain/text" },
+      json: {
+        data: signature,
+        command: "add_file",
+        create_short_guid: true,
+        document_id: documentId,
+        path: { starting_document_id: folder.docwsid, path: name },
+        allow_conflict: options.allowConflict ?? true,
+        file_flags: { is_writable: true, is_executable: false, is_hidden: false },
+        mtime: Math.floor(mtimeMs),
+        btime: Math.floor(mtimeMs),
+      },
+    });
+    return responseJson<Json>(done);
+  }
+
+  /**
+   * Upload bytes to a content slot, returning the new document id and the
+   * signature that `update/documents` needs to attach them to a document.
+   */
+  async stageContent(zone: string, name: string, data: Uint8Array): Promise<{ documentId: string; signature: Json }> {
     const contentType = guessContentType(name);
     const init = await this.auth.session.request("POST", `${this.documentRoot}/ws/${zone}/upload/web`, {
       params: { ...this.params, token: this.uploadToken() },
@@ -238,21 +268,17 @@ export class DriveClient {
       size: single.size,
     };
     if (single.receipt) signature.receipt = single.receipt; // absent for zero-byte files
-    await this.auth.session.request("POST", `${this.documentRoot}/ws/${zone}/update/documents`, {
+    return { documentId: String(slot.document_id), signature };
+  }
+
+  /** POST a raw update/documents body. For probing Apple's semantics only. */
+  async updateDocumentsRaw(zone: string, body: Json): Promise<Json> {
+    const res = await this.auth.session.request("POST", `${this.documentRoot}/ws/${zone}/update/documents`, {
       params: this.params,
       headers: { "Content-Type": "plain/text" },
-      json: {
-        data: signature,
-        command: "add_file",
-        create_short_guid: true,
-        document_id: slot.document_id,
-        path: { starting_document_id: folder.docwsid, path: name },
-        allow_conflict: true,
-        file_flags: { is_writable: true, is_executable: false, is_hidden: false },
-        mtime: Math.floor(mtimeMs),
-        btime: Math.floor(mtimeMs),
-      },
+      json: body,
     });
+    return responseJson<Json>(res);
   }
 
   /**
@@ -295,17 +321,31 @@ export class DriveClient {
   }
 
   /** Move to Recently Deleted, where the user can still recover it for 30 days. */
-  async trash(item: DriveItem): Promise<void> {
-    await this.auth.session.request("POST", `${this.serviceRoot}/moveItemsToTrash`, {
+  async trash(item: DriveItem): Promise<Json> {
+    const res = await this.auth.session.request("POST", `${this.serviceRoot}/moveItemsToTrash`, {
       params: this.params,
       json: { items: [{ drivewsid: item.drivewsid, etag: item.etag, clientId: item.drivewsid }] },
     });
+    return responseJson<Json>(res);
   }
 
-  async rename(item: DriveItem, name: string): Promise<void> {
-    await this.auth.session.request("POST", `${this.serviceRoot}/renameItems`, {
+  /** Move into another folder. The name is kept. */
+  async move(item: DriveItem, destination: DriveItem): Promise<Json> {
+    const res = await this.auth.session.request("POST", `${this.serviceRoot}/moveItems`, {
+      params: this.params,
+      json: {
+        destinationDrivewsId: destination.drivewsid,
+        items: [{ drivewsid: item.drivewsid, etag: item.etag, clientId: item.drivewsid }],
+      },
+    });
+    return responseJson<Json>(res);
+  }
+
+  async rename(item: DriveItem, name: string): Promise<Json> {
+    const res = await this.auth.session.request("POST", `${this.serviceRoot}/renameItems`, {
       params: this.params,
       json: { items: [{ drivewsid: item.drivewsid, etag: item.etag, name }] },
     });
+    return responseJson<Json>(res);
   }
 }

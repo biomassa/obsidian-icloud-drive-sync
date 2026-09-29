@@ -136,6 +136,7 @@ export function planSync(input: PlanInput): PlanResult {
   const newlyIgnored = [...base.keys()].filter((k) => filter.ignores(k)).sort();
   for (const k of newlyIgnored) done.add(k);
   for (const s of input.local.skipped) done.add(s.key);
+  for (const s of input.remote.skipped ?? []) done.add(s.key);
 
   // ── remote renames: the document id survives a rename or move ─────────────
   const vanishedRemotely = [...base.values()].filter((b) => !done.has(b.key) && !remote.has(b.key));

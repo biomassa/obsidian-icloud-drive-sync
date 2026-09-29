@@ -394,6 +394,199 @@ async function writeTest(cfg: ObsisyncConfig): Promise<void> {
   await auth.session.persist();
 }
 
+/**
+ * Answer the questions the sync executor depends on, in a throwaway folder:
+ * does a document keep its id through a rename and a move, is a stale etag
+ * refused, what does allow_conflict=false do, are names case-sensitive, and
+ * what does update/documents return.
+ */
+async function semantics(cfg: ObsisyncConfig): Promise<void> {
+  const auth = await signedIn(cfg);
+  const drive = new DriveClient(auth);
+  const root = await drive.root();
+  const NAME = "icloudsync-semantics-test";
+  if ((await drive.list(root)).some((c) => c.name === NAME)) throw new Error(`${NAME} already exists; remove it first`);
+  const top = await drive.mkdir(root, NAME);
+  const a = await drive.mkdir(top, "A");
+  const b = await drive.mkdir(top, "B");
+  const data = new TextEncoder().encode("semantics probe\n");
+  const find = async (folder: DriveItem, name: string) => (await drive.list(folder)).find((c) => c.name === name);
+  const show = (i: DriveItem | undefined) =>
+    i ? `docwsid=${i.docwsid} drivewsid=${i.drivewsid.slice(0, 40)} etag=${i.etag}` : "MISSING";
+  const attempt = async (label: string, fn: () => Promise<unknown>) => {
+    try {
+      const r = await fn();
+      log(`  ${label}: succeeded${r !== undefined ? ` → ${JSON.stringify(r).slice(0, 300)}` : ""}`);
+      return true;
+    } catch (e) {
+      log(`  ${label}: FAILED → ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
+      return false;
+    }
+  };
+
+  try {
+    log("1. what update/documents returns");
+    const resp = await drive.upload(a, "x.md", data);
+    log(`  top-level keys: ${Object.keys(resp).join(", ")}`);
+    log(`  body: ${JSON.stringify(resp).slice(0, 600)}`);
+    const x0 = await find(a, "x.md");
+    log(`  listed: ${show(x0)}`);
+
+    log("2. rename x.md → y.md in the same folder");
+    await drive.rename(x0!, "y.md");
+    const y = await find(a, "y.md");
+    log(`  after:  ${show(y)}`);
+    log(`  docwsid kept: ${y?.docwsid === x0!.docwsid}  drivewsid kept: ${y?.drivewsid === x0!.drivewsid}  etag changed: ${y?.etag !== x0!.etag}`);
+    log(`  name, extension fields: ${JSON.stringify({ name: y?.raw.name, extension: y?.raw.extension })}`);
+
+    log("3. move A/y.md → B/");
+    const moveResp = await drive.move(y!, b);
+    log(`  response: ${JSON.stringify(moveResp).slice(0, 400)}`);
+    const moved = await find(b, "y.md");
+    log(`  after:  ${show(moved)}`);
+    log(`  docwsid kept: ${moved?.docwsid === y?.docwsid}  etag changed: ${moved?.etag !== y?.etag}`);
+
+    log("4. trash with a stale etag");
+    await drive.upload(a, "z.md", data);
+    const z1 = await find(a, "z.md");
+    await drive.rename(z1!, "z2.md");
+    const z2 = await find(a, "z2.md");
+    log(`  etag before rename ${z1?.etag}, after ${z2?.etag}`);
+    const staleOk = await attempt("moveItemsToTrash with the pre-rename etag", () => drive.trash(z1!));
+    log(`  z2.md still present: ${Boolean(await find(a, "z2.md"))}`);
+    if (!staleOk) await attempt("moveItemsToTrash with the current etag", () => drive.trash(z2!));
+
+    log("5. allow_conflict=false onto a taken name");
+    await drive.upload(a, "c.md", data);
+    await attempt("second upload of c.md with allowConflict=false", () =>
+      drive.upload(a, "c.md", new TextEncoder().encode("second"), Date.now(), { allowConflict: false }),
+    );
+    log(`  folder A now: ${(await drive.list(a)).map((c) => c.name).join(", ")}`);
+
+    log("6. case sensitivity");
+    await drive.upload(b, "Case.md", data);
+    await attempt("upload case.md next to Case.md", () => drive.upload(b, "case.md", data));
+    log(`  folder B now: ${(await drive.list(b)).map((c) => c.name).join(", ")}`);
+  } finally {
+    await drive.trash((await find(root, NAME)) ?? top).catch((e) => log(`cleanup failed: ${e}`));
+    log(`cleanup: ${NAME} moved to Recently Deleted`);
+    await auth.session.persist();
+  }
+}
+
+/** Second probe: the stale-trash response, and whether a document can be updated in place. */
+async function semantics2(cfg: ObsisyncConfig): Promise<void> {
+  const auth = await signedIn(cfg);
+  const drive = new DriveClient(auth);
+  const root = await drive.root();
+  const NAME = "icloudsync-semantics-test-2";
+  if ((await drive.list(root)).some((c) => c.name === NAME)) throw new Error(`${NAME} already exists; remove it first`);
+  const top = await drive.mkdir(root, NAME);
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const find = async (name: string) => (await drive.list(top)).find((c) => c.name === name);
+  const text = async (i: DriveItem) => new TextDecoder().decode(await drive.download(i));
+  try {
+    log("1. stale-etag trash: the response");
+    await drive.upload(top, "z.md", enc("z"));
+    const z1 = (await find("z.md"))!;
+    await drive.rename(z1, "z2.md");
+    log(`  stale:   ${JSON.stringify(await drive.trash(z1)).slice(0, 500)}`);
+    const z2 = (await find("z2.md"))!;
+    log(`  current: ${JSON.stringify(await drive.trash(z2)).slice(0, 500)}`);
+    log(`  z2.md present afterwards: ${Boolean(await find("z2.md"))}`);
+
+    log("2. update in place");
+    const zone = top.zone;
+    const variants: [string, (docId: string, sig: Record<string, unknown>, stagedId: string) => Record<string, unknown>][] = [
+      ["add_file onto the existing document_id", (docId, sig) => ({
+        data: sig, command: "add_file", create_short_guid: true, document_id: docId,
+        path: { starting_document_id: top.docwsid, path: "u.md" }, allow_conflict: false,
+        file_flags: { is_writable: true, is_executable: false, is_hidden: false }, mtime: Date.now(), btime: Date.now(),
+      })],
+      ["update_file on the existing document_id", (docId, sig) => ({
+        data: sig, command: "update_file", document_id: docId,
+        file_flags: { is_writable: true, is_executable: false, is_hidden: false }, mtime: Date.now(),
+      })],
+      ["modify_file on the existing document_id", (docId, sig) => ({
+        data: sig, command: "modify_file", document_id: docId, mtime: Date.now(),
+      })],
+    ];
+    for (const [label, body] of variants) {
+      const before = await find("u.md") ?? (await drive.upload(top, "u.md", enc("version one")), await find("u.md"));
+      const original = await text(before!);
+      const { signature } = await drive.stageContent(zone, "u.md", enc("version TWO"));
+      let outcome: string;
+      try {
+        const r = await drive.updateDocumentsRaw(zone, body(before!.docwsid, signature, ""));
+        outcome = `ok ${JSON.stringify(r).slice(0, 250)}`;
+      } catch (e) {
+        outcome = `error ${e instanceof Error ? e.message : String(e)}`;
+      }
+      const listing = await drive.list(top);
+      const after = listing.find((c) => c.name === "u.md");
+      log(`  ${label}: ${outcome}`);
+      log(`    folder: ${listing.map((c) => c.name).join(", ")}`);
+      log(`    u.md docwsid kept: ${after?.docwsid === before!.docwsid}; content now: ${after ? JSON.stringify(await text(after)) : "-"} (was ${JSON.stringify(original)})`);
+      for (const c of listing) if (c.name !== "u.md") await drive.trash(c);
+      if (after && (await text(after)) !== "version one") {
+        await drive.trash(after);
+      }
+    }
+  } finally {
+    await drive.trash((await drive.list(root)).find((c) => c.name === NAME) ?? top).catch((e) => log(`cleanup failed: ${e}`));
+    log(`cleanup: ${NAME} moved to Recently Deleted`);
+    await auth.session.persist();
+  }
+}
+
+/** Third probe: can an in-place update be made conditional on the etag? */
+async function semantics3(cfg: ObsisyncConfig): Promise<void> {
+  const auth = await signedIn(cfg);
+  const drive = new DriveClient(auth);
+  const root = await drive.root();
+  const NAME = "icloudsync-semantics-test-3";
+  if ((await drive.list(root)).some((c) => c.name === NAME)) throw new Error(`${NAME} already exists; remove it first`);
+  const top = await drive.mkdir(root, NAME);
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const find = async () => (await drive.list(top)).find((c) => c.name === "u.md");
+  const text = async (i: DriveItem) => new TextDecoder().decode(await drive.download(i));
+  try {
+    await drive.upload(top, "u.md", enc("v1"));
+    const stale = (await find())!;
+    // Another device edits it: an in-place update moves the etag on.
+    const s1 = await drive.stageContent(top.zone, "u.md", enc("v2 from another device"));
+    await drive.updateDocumentsRaw(top.zone, {
+      data: s1.signature, command: "add_file", create_short_guid: true, document_id: stale.docwsid,
+      path: { starting_document_id: top.docwsid, path: "u.md" }, allow_conflict: false,
+      file_flags: { is_writable: true, is_executable: false, is_hidden: false }, mtime: Date.now(), btime: Date.now(),
+    });
+    const current = (await find())!;
+    log(`etag scanned ${stale.etag}, now ${current.etag}`);
+    for (const field of ["etag", "document_etag", "if_match"]) {
+      const s2 = await drive.stageContent(top.zone, "u.md", enc(`v3 with stale ${field}`));
+      let outcome: string;
+      try {
+        const r = await drive.updateDocumentsRaw(top.zone, {
+          data: s2.signature, command: "add_file", create_short_guid: true, document_id: stale.docwsid,
+          path: { starting_document_id: top.docwsid, path: "u.md" }, allow_conflict: false,
+          file_flags: { is_writable: true, is_executable: false, is_hidden: false }, mtime: Date.now(), btime: Date.now(),
+          [field]: stale.etag,
+        });
+        const st = (r.results as Record<string, unknown>[] | undefined)?.[0]?.status;
+        outcome = `accepted, status ${JSON.stringify(st)}`;
+      } catch (e) {
+        outcome = `REJECTED ${e instanceof Error ? e.message : String(e)}`;
+      }
+      const now = (await find())!;
+      log(`  stale ${field}: ${outcome}; content now ${JSON.stringify(await text(now))}`);
+    }
+  } finally {
+    await drive.trash((await drive.list(root)).find((c) => c.name === NAME) ?? top).catch((e) => log(`cleanup failed: ${e}`));
+    log(`cleanup: ${NAME} moved to Recently Deleted`);
+    await auth.session.persist();
+  }
+}
+
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   const cfg = obsisyncConfig();
@@ -414,6 +607,12 @@ async function main(): Promise<void> {
       return compare(cfg, rest[0]);
     case "write-test":
       return writeTest(cfg);
+    case "semantics":
+      return semantics(cfg);
+    case "semantics2":
+      return semantics2(cfg);
+    case "semantics3":
+      return semantics3(cfg);
     default:
       console.log("usage: node spike/cli.ts login [--sms] | status | ls [path] | compare <path> | write-test");
   }
