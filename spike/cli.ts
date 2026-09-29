@@ -839,6 +839,18 @@ async function main(): Promise<void> {
       return e2e(cfg);
     case "plan-real":
       return planReal(cfg);
+    case "mkroot": {
+      // Create an empty folder at the iCloud Drive root, for a throwaway test vault.
+      const name = rest[0];
+      if (!name || !/^icloudsync-[a-z0-9-]+$/.test(name)) throw new Error("usage: mkroot icloudsync-<name>");
+      const auth = await signedIn(cfg);
+      const drive = new DriveClient(auth);
+      const root = await drive.root();
+      if ((await drive.list(root)).some((c) => c.name === name)) return log(`${name} already exists`);
+      await drive.mkdir(root, name);
+      await auth.session.persist();
+      return log(`created ${name} at the iCloud Drive root`);
+    }
     default:
       console.log("usage: node spike/cli.ts login [--sms] | status | ls [path] | compare <path> | write-test");
   }

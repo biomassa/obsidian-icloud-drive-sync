@@ -98,7 +98,18 @@ obsisync's `_assert_secure_keyring()` does.
    `workspace N.json` / `workspace(1).json` duplicates — now ignored by default. Hashing 316 MB
    locally took 0.6 s; peak RSS 195 MB. The iCloud walk took 6 s once and 37 s another time.
 
-3. **Obsidian shell** — constraints found so far:
+3. **Obsidian shell** — built; first manual test pending:
+   - [x] scheduler (`src/sync/scheduler.ts`): poll, debounced local changes against a cached
+         iCloud scan, deferral, echo suppression — tested on a virtual clock
+   - [x] controller (`src/plugin/controller.ts`): sign-in only on a click, never retried;
+         resume from stored tokens first; one-time notices — tested against FakeApple
+   - [x] settings allow-list (data.json can never hold a secret), session in `secretStorage`,
+         refusal on plaintext secret storage or an obsisync-managed vault, plugin code excluded
+   - [x] UI: sign-in and 2FA dialogs, status view with deletion / conflict / ignored decisions,
+         settings tab with vault discovery, status bar, commands, ribbon icon
+   - [ ] manual test in `~/obsi-plugin-test` ↔ iCloud `icloudsync-plugin-test`
+
+   Constraints found so far:
    - Reuse a recent remote scan for watcher-triggered cycles; walk the whole tree only on the
      poll timer (a walk is 98 listings and took up to 37 s). A stale scan cannot cause false
      deletions, and every write re-checks the etag first.
