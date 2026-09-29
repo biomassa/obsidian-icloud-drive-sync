@@ -113,6 +113,13 @@ obsisync's `_assert_secure_keyring()` does.
          Found: under niri, Electron stores secrets as plaintext unless Obsidian gets
          `--password-store=gnome-libsecret` (the plugin now says so)
 
+   Other devices: this plugin's folder never syncs, so no other device receives its code; it is
+   desktop-only, and on macOS it refuses to run (iCloud Drive syncs natively there). Its id does
+   travel in `community-plugins.json`. Obsidian 1.13.7's startup (`initialize` in app.js) loads
+   an enabled id only if its manifest exists, and otherwise skips it silently while keeping the
+   id in the list — so another device ignores it and never strips it. Read from the desktop
+   bundle; mobile shares the codebase but was not checked.
+
    Still to do:
    - warn when Obsidian's own Sync core plugin is active on the same vault
    - prune folders emptied by deletions and renames
