@@ -1,0 +1,21 @@
+{
+  "name": "icloud-drive-sync",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Obsidian plugin that syncs a vault with iCloud Drive on Linux and Windows",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "spike": "node spike/cli.ts"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.13.1",
+    "typescript": "^7.0.2"
+  }
+}

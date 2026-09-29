@@ -1,0 +1,16 @@
+{
+  "code": "123456",
+  "salt": "AAECAwQFBgcICQoLDA0ODw==",
+  "w0": "53e59f1f9f56c2317d99f7a1e76fd1d43677ccb19c2c125e054f9a81281e0aec",
+  "w1": "36b2274bf5170f57d79416c1f2ea42d1d06d7a412d5de4b74682b351b053dea1",
+  "x": "1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d07",
+  "clientMessage": "045c226bec981589eedb2c2b520ca316066206ed7a88cc2075811b1c95ff6a0d6e28361cddc474a3867aea6d0844f246977841b586fadca36022b2b0bc7c7fe981",
+  "serverMessage": "04b17e36690bd8c4e325da65330595a02f5aad29a002711596fa45587e1170726af092962ee360a70845f6b64a20fd1a27e7063f0702d18da4dbe6aa25b548590f",
+  "clientConfirmation": "a5101a37c42efe369c2d06d2c01dee2eace3708ec4f1e703e8ef8a597787fdf2",
+  "serverConfirmation": "72df17b4bbad485d58bdf1ee5021e1520aaf11e59acbcba142e80cdb83200c81",
+  "rawKey": "8c59f6ed0e7e85db69caca85ce8efbca4899f9d366590f60727664e85460c8f0",
+  "verifierKey": "aca3bf85d30578842718b73164f3d883f71df903d70a6d650cc12e84a965f161",
+  "proverKey": "93bd482d2913f07edf60bcef695f1e8f9d014fb145103c278d2115b37c1df1f8",
+  "encryptedCode": "AGRlZmdoaWprbG1ubxBOumi9j9rJQc+iD2eM1lcyEjWIISE=",
+  "decryptedCode": "987654"
+}

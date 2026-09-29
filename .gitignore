@@ -1,0 +1,7 @@
+node_modules/
+main.js
+*.log
+CLAUDE.md
+AGENTS.md
+# Spike state: session tokens and cookies. Never commit.
+.spike/
