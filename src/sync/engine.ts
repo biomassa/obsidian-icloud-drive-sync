@@ -616,7 +616,7 @@ export class SyncEngine {
         await this.local.trash(action.key);
         state.base.delete(action.key);
         state.pendingDeletions.delete(action.key);
-        this.log("info", `Moved ${action.key} to the trash (deleted on iCloud)`);
+        this.log("info", `Deleted on iCloud, so moved ${action.key} to the trash here (recoverable)`);
         return undefined;
       }
 
@@ -626,7 +626,7 @@ export class SyncEngine {
         this.noteRemote(action.key, null);
         state.base.delete(action.key);
         state.pendingDeletions.delete(action.key);
-        this.log("info", `Moved ${action.key} to Recently Deleted on iCloud (deleted here)`);
+        this.log("info", `Deleted here, so moved ${action.key} to iCloud's Recently Deleted (recoverable for 30 days)`);
         return undefined;
       }
 
