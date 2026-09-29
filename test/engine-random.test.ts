@@ -173,7 +173,9 @@ function runScenario(seed: number, rounds: number) {
           console.log("  remote", JSON.stringify([...remote.files].map(([k, f]) => `${k}=${str(f.data)}#${f.docId}`)));
           console.log("  fail", [...remote.failUpload], "afterScan", !!local.afterScan, "onDownload", !!remote.onDownload);
         }
-        const result = await engine.runCycle();
+        // Half the cycles plan against a cached iCloud scan, as watcher-triggered
+        // cycles will; other-device changes since are then invisible until a walk.
+        const result = await engine.runCycle(chance(0.5) ? { reuseRemoteScanWithinMs: 1e12 } : {});
         remote.failUpload.clear();
         remote.afterScan = null;
         local.afterScan = null;

@@ -30,6 +30,7 @@ import {
   type PendingDeletion,
   type Remote,
   type RemoteEntry,
+  type RemoteScan,
   type StateStore,
   type SyncState,
 } from "./types.ts";
@@ -58,6 +59,19 @@ export interface CycleResult {
   newlyIgnored: string[];
   /** Local keys this cycle wrote or renamed, with the hash written: for watcher echo suppression. */
   localWrites: { key: string; hash: string }[];
+  /** True when this cycle planned against a cached iCloud scan instead of walking the tree. */
+  remoteScanReused: boolean;
+}
+
+export interface CycleOptions {
+  /**
+   * Plan against the last iCloud scan if it is at most this old, instead of
+   * walking the whole tree (98 listings, up to 37 s on the real vault). Safe
+   * for local-change cycles: a stale scan cannot produce false deletions of
+   * local files it has not seen change, and every write re-checks the etag.
+   */
+  reuseRemoteScanWithinMs?: number;
+  onProgress?: (done: number, total: number) => void;
 }
 
 class SkipAction extends Error {}
@@ -95,6 +109,8 @@ export class SyncEngine {
   private readonly confirmed = new Set<string>();
   private allowManyConflicts = false;
   private running = false;
+  /** The last iCloud scan, kept current with this engine's own remote writes. */
+  private remoteCache: { entries: Map<string, RemoteEntry>; skipped: RemoteScan["skipped"]; at: number } | null = null;
 
   constructor(args: {
     local: LocalFs;
@@ -164,17 +180,29 @@ export class SyncEngine {
     return this.running;
   }
 
-  async runCycle(): Promise<CycleResult> {
+  async runCycle(options: CycleOptions = {}): Promise<CycleResult> {
     if (this.running) throw new Error("a sync cycle is already running");
     this.running = true;
     try {
-      return await this.cycle();
+      return await this.cycle(options);
     } finally {
       this.running = false;
     }
   }
 
-  private async cycle(): Promise<CycleResult> {
+  /** Forget the cached iCloud scan; the next cycle walks the tree. */
+  invalidateRemoteScan(): void {
+    this.remoteCache = null;
+  }
+
+  /** Record a remote change this engine made, so a reused scan stays true. */
+  private noteRemote(key: string, entry: RemoteEntry | null): void {
+    if (!this.remoteCache) return;
+    if (entry) this.remoteCache.entries.set(key, entry);
+    else this.remoteCache.entries.delete(key);
+  }
+
+  private async cycle(options: CycleOptions): Promise<CycleResult> {
     const result: CycleResult = {
       status: "ok",
       done: [],
@@ -183,6 +211,7 @@ export class SyncEngine {
       parked: [],
       newlyIgnored: [],
       localWrites: [],
+      remoteScanReused: false,
     };
     const state = await this.loadState();
 
@@ -195,10 +224,20 @@ export class SyncEngine {
       this.log("error", `Local scan failed, nothing synced: ${errorText(e)}`);
       return result;
     }
-    let remoteScan;
+    let remoteScan: RemoteScan;
+    const cache = this.remoteCache;
+    const reuseWithin = options.reuseRemoteScanWithinMs;
     try {
-      remoteScan = await this.remote.scan();
+      if (cache && reuseWithin !== undefined && this.opt.now() - cache.at <= reuseWithin) {
+        remoteScan = { entries: new Map(cache.entries), skipped: cache.skipped };
+        result.remoteScanReused = true;
+      } else {
+        const at = this.opt.now();
+        remoteScan = await this.remote.scan();
+        this.remoteCache = { entries: new Map(remoteScan.entries), skipped: remoteScan.skipped, at };
+      }
     } catch (e) {
+      this.remoteCache = null;
       result.status = "aborted";
       result.abort =
         e instanceof AuthRequiredError
@@ -257,6 +296,9 @@ export class SyncEngine {
     let sinceSave = 0;
     let authFailure: unknown = null;
     const queue = [...plan.actions];
+    const total = queue.length;
+    let finished = 0;
+    options.onProgress?.(0, total);
     const worker = async () => {
       for (let action = queue.shift(); action; action = queue.shift()) {
         if (authFailure) return;
@@ -274,6 +316,8 @@ export class SyncEngine {
           }
         } catch (e) {
           if (e instanceof SkipAction || e instanceof ChangedSinceScanError) {
+            // iCloud moved on since the scan; a reused scan would now mislead.
+            if (e instanceof ChangedSinceScanError) this.remoteCache = null;
             result.skipped.push({ action, why: e.message });
             this.log("info", `Skipped ${describe(action)}: ${e.message}`);
           } else if (e instanceof AuthRequiredError) {
@@ -284,6 +328,7 @@ export class SyncEngine {
             this.log("error", `Failed to ${describe(action)}: ${errorText(e)}`);
           }
         }
+        options.onProgress?.(++finished, total);
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, this.opt.concurrency) }, worker));
@@ -376,6 +421,7 @@ export class SyncEngine {
         const data = await this.local.read(action.key);
         const hash = sha256(data);
         const uploaded = await this.remote.upload(action.key, data, action.local.mtimeMs, action.remote);
+        this.noteRemote(action.key, uploaded);
         // Recorded with the pre-read stamp: an edit during the read changes it,
         // so the next cycle hashes again rather than trusting this record.
         this.record(state, action.key, { hash, size: data.length }, action.local, hashedAtMs, uploaded);
@@ -441,6 +487,7 @@ export class SyncEngine {
         const hashedAtMs = now();
         const asideData = await this.local.read(aside);
         const uploaded = await this.remote.upload(aside, asideData, asideStamp.mtimeMs);
+        this.noteRemote(aside, uploaded);
         this.record(state, aside, { hash: sha256(asideData), size: asideData.length }, asideStamp, hashedAtMs, uploaded);
         this.log("warn", `Conflict in ${action.key}: kept both; this device's version is ${aside}`);
         return `kept both; this device's version is ${aside}`;
@@ -458,6 +505,7 @@ export class SyncEngine {
       case "trashRemote": {
         await this.assertLocalAbsent(action.key);
         await this.remote.trash(action.remote);
+        this.noteRemote(action.key, null);
         state.base.delete(action.key);
         state.pendingDeletions.delete(action.key);
         this.log("info", `Moved ${action.key} to Recently Deleted on iCloud (deleted here)`);
@@ -501,6 +549,8 @@ export class SyncEngine {
 
       case "moveRemote": {
         const moved = await this.remote.move(action.remote, action.to);
+        this.noteRemote(action.from, null);
+        this.noteRemote(action.to, moved);
         state.base.delete(action.from);
         this.record(
           state,

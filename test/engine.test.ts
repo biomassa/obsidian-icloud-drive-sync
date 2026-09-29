@@ -234,3 +234,44 @@ test("Apple's zone-lock rejection is recognised as retryable", async () => {
   assert.ok(isZoneLockConflict(new ApiError("Sync zone CAS Op-Lock failed. There was a concurrent write and this operation was rejected. Retry request...")));
   assert.ok(!isZoneLockConflict(new ApiError("Uniqueness constraint violation. Rejecting update")));
 });
+
+test("a local-change cycle can reuse the last iCloud scan, and our own writes keep it true", async () => {
+  const s = await synced(10);
+  const scans = () => s.remote.calls;
+  s.local.put("n1.md", "edited 1");
+  const before = scans();
+  const r1 = await s.engine.runCycle({ reuseRemoteScanWithinMs: 60_000 });
+  assert.equal(r1.remoteScanReused, true);
+  assert.equal(s.remote.get("n1.md"), "edited 1");
+  // The reused scan now holds the new etag, so the next reuse sees no change.
+  s.clock.tick(10_000);
+  const r2 = await s.engine.runCycle({ reuseRemoteScanWithinMs: 60_000 });
+  assert.equal(r2.remoteScanReused, true);
+  assert.ok(r2.done.every((d) => d.action.kind === "refreshBase"), "no download of our own upload");
+  assert.equal(scans() - before, 1, "only the upload touched iCloud; no scan");
+  // Too old: walk again.
+  s.clock.tick(120_000);
+  const r3 = await s.engine.runCycle({ reuseRemoteScanWithinMs: 60_000 });
+  assert.equal(r3.remoteScanReused, false);
+});
+
+test("a change on iCloud after the cached scan drops the cache", async () => {
+  const s = await synced(10);
+  s.local.put("n2.md", "local edit");
+  s.remote.put("n2.md", "phone edit", s.remote.files.get("n2.md")!.docId); // after the scan
+  const r = await s.engine.runCycle({ reuseRemoteScanWithinMs: 60_000 });
+  assert.equal(r.remoteScanReused, true);
+  assert.equal(r.skipped.length, 1, "the stale upload was refused");
+  const next = await s.engine.runCycle({ reuseRemoteScanWithinMs: 60_000 });
+  assert.equal(next.remoteScanReused, false, "the cache was dropped, so it walked again");
+  const values = [...s.local.files.values()].map((f) => str(f.data));
+  assert.ok(values.includes("local edit") && values.includes("phone edit"), "both kept as a conflict");
+});
+
+test("progress is reported for every action", async () => {
+  const s = setup();
+  for (let i = 0; i < 5; i++) s.local.put(`p${i}.md`, `p${i}`);
+  const seen: string[] = [];
+  await s.engine.runCycle({ onProgress: (d, t) => seen.push(`${d}/${t}`) });
+  assert.deepEqual(seen, ["0/5", "1/5", "2/5", "3/5", "4/5", "5/5"]);
+});
