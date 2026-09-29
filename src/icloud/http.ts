@@ -69,11 +69,11 @@ export function nodeTransport(options: NodeTransportOptions = {}): Transport {
           ...(options.family ? { family: options.family } : {}),
         },
         (res) => {
+          clearTimeout(connectTimer);
           const chunks: Buffer[] = [];
           res.on("data", (c: Buffer) => chunks.push(c));
           res.on("error", (e) => reject(new NetworkError(`response error: ${e.message}`, e)));
           res.on("end", () => {
-            clearTimeout(connectTimer);
             let body: Buffer = Buffer.concat(chunks);
             try {
               const enc = String(res.headers["content-encoding"] ?? "").toLowerCase();
@@ -104,7 +104,11 @@ export function nodeTransport(options: NodeTransportOptions = {}): Transport {
         r.destroy(new NetworkError(`connection to ${url.hostname} timed out`));
       }, connectTimeout);
       r.on("socket", (s) => {
-        s.once("secureConnect", () => clearTimeout(connectTimer));
+        // A keep-alive socket from the agent's pool is already connected and
+        // never emits secureConnect; leaving the timer armed would kill any
+        // request on it that runs longer than the connect timeout.
+        if (!s.connecting) clearTimeout(connectTimer);
+        else s.once("secureConnect", () => clearTimeout(connectTimer));
       });
       r.setTimeout(idleTimeout, () => {
         r.destroy(new NetworkError(`request to ${url.hostname} stalled for ${idleTimeout / 1000}s`));
@@ -149,6 +153,7 @@ export class HttpClient {
     }
 
     const headers: Record<string, string> = {
+      Accept: "*/*", // what python-requests sends, which Apple accepts today
       "Accept-Encoding": "gzip, deflate, br",
       ...this.defaultHeaders,
       ...opts.headers,

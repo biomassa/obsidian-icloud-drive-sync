@@ -23,6 +23,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 
 import { ICloudAuth } from "../src/icloud/auth.ts";
 import { DriveClient, isFolderLike, type DriveItem } from "../src/icloud/drive.ts";
@@ -93,6 +94,7 @@ async function openAuth(cfg: ObsisyncConfig): Promise<ICloudAuth> {
     store: new FileSessionStore(join(STATE_DIR, "session.json"), cfg.apple_id),
     transport: nodeTransport({ family: cfg.force_ipv4 ? 4 : 0 }),
     bridge: { family: cfg.force_ipv4 ? 4 : 0 },
+    onDiagnostic: (m) => log(m),
   });
 }
 
@@ -106,6 +108,8 @@ async function signedIn(cfg: ObsisyncConfig): Promise<ICloudAuth> {
 async function login(cfg: ObsisyncConfig, preferSms: boolean): Promise<void> {
   const auth = await openAuth(cfg);
   log(`signing in as ${cfg.apple_id}`);
+  // One attempt only. A rejected password is not retried: repeated SRP failures
+  // count toward an Apple ID lockout, and the diagnostic line above says why.
   const result = await auth.signIn(keyringPassword(cfg.apple_id));
   if (result.status === "signed-in") {
     log("signed in without a code (stored trust token accepted)");
@@ -163,8 +167,33 @@ async function ls(cfg: ObsisyncConfig, path?: string): Promise<void> {
     log(`full walk: ${files.size} files in ${((Date.now() - started) / 1000).toFixed(1)}s`);
     const noEtag = [...files.values()].filter((f) => !f.etag).length;
     log(`files without an etag: ${noEtag}`);
+    const s = drive.listingStats;
+    log(`listings: ${s.listings}, with numberOfItems: ${s.withCount}, mismatched: ${s.mismatches.length}`);
+    for (const m of s.mismatches.slice(0, 10)) log(`  count mismatch: ${m}`);
+    diffAgainstObsisync(new Set(files.keys()));
   }
   await auth.session.persist();
+}
+
+/**
+ * Compare the walked paths with what obsisync tracks. Differences should all be
+ * explained by obsisync's ignore patterns; anything else is a naming bug here
+ * (extension joining, Unicode normalization).
+ */
+function diffAgainstObsisync(remote: Set<string>): void {
+  const dbPath = join(homedir(), ".local/share/obsisync/sync_state.db");
+  if (!existsSync(dbPath)) return log("no obsisync database to compare against");
+  const db = new DatabaseSync(`file:${dbPath}?mode=ro`, { readOnly: true });
+  const tracked = new Set(
+    (db.prepare("SELECT path FROM file_states").all() as { path: string }[]).map((r) => r.path),
+  );
+  db.close();
+  const onlyRemote = [...remote].filter((p) => !tracked.has(p));
+  const onlyTracked = [...tracked].filter((p) => !remote.has(p));
+  log(`obsisync tracks ${tracked.size}; walk found ${remote.size}`);
+  log(`only on iCloud walk: ${onlyRemote.length}; only in obsisync: ${onlyTracked.length}`);
+  for (const p of onlyRemote.slice(0, 15)) log(`  + ${p}`);
+  for (const p of onlyTracked.slice(0, 15)) log(`  - ${p}`);
 }
 
 async function compare(cfg: ObsisyncConfig, relPath: string): Promise<void> {

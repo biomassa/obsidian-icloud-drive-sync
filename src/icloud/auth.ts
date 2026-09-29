@@ -106,6 +106,8 @@ export interface ICloudAuthOptions {
   /** Apple IDs registered in mainland China use the .cn endpoints. */
   chinaMainland?: boolean;
   bridge?: BridgeOptions;
+  /** Non-secret facts about a sign-in, for diagnosing a rejected password. */
+  onDiagnostic?: (message: string) => void;
 }
 
 export class ICloudAuth {
@@ -119,6 +121,7 @@ export class ICloudAuth {
   private readonly authEndpoint: string;
   private readonly setupEndpoint: string;
   private readonly bridge: TrustedDeviceBridge;
+  private readonly diagnostic: (message: string) => void;
 
   private authData: Json = {};
   private boot: Hsa2BootContext | null = null;
@@ -136,6 +139,7 @@ export class ICloudAuth {
     this.setupEndpoint = `https://setup.icloud.com${cn}/setup/ws/1`;
     this.session = session;
     this.bridge = new TrustedDeviceBridge(options.bridge);
+    this.diagnostic = options.onDiagnostic ?? (() => undefined);
     if (!session.data.client_id) session.data.client_id = randomUUID().toLowerCase();
     this.params = { ...PARAMS, clientId: session.data.client_id };
   }
@@ -303,8 +307,13 @@ export class ICloudAuth {
 
     const protocol = init.protocol as SrpProtocol;
     if (!SRP_PROTOCOLS.includes(protocol)) throw new FailedLoginError(`unsupported SRP protocol: ${protocol}`);
+    const salt = b64decode(String(init.salt));
+    this.diagnostic(
+      `srp: protocol=${protocol} iterations=${String(init.iteration)} salt=${salt.length}B ` +
+        `leadingZero=${salt[0] === 0} trustToken=${this.session.data.trust_token ? "sent" : "none"}`,
+    );
     const proof = client.processChallenge(password, {
-      salt: b64decode(String(init.salt)),
+      salt,
       B: b64decode(String(init.b)),
       iterations: Number(init.iteration),
       protocol,

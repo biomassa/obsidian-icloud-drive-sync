@@ -12,8 +12,10 @@
  * - Replacing a file uploads the new content first, under a hidden temporary
  *   name, and only then trashes the old one and renames. The Python deleted
  *   first, so a failed upload lost the file on both sides.
- * - A listing whose item count disagrees with `numberOfItems` is an error, not
- *   a short folder: a truncated listing looks exactly like deleted files.
+ * - A listing without an `items` array is an error, not an empty folder: a
+ *   truncated listing looks exactly like deleted files. Whether `numberOfItems`
+ *   can be trusted as a second check is recorded in `listingStats` until live
+ *   data settles it.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 
@@ -102,6 +104,8 @@ export function temporaryUploadName(name: string): string {
 
 export class DriveClient {
   private readonly auth: ICloudAuth;
+  /** How many listings carried numberOfItems, and which disagreed with their items. */
+  readonly listingStats = { listings: 0, withCount: 0, mismatches: [] as string[] };
 
   constructor(auth: ICloudAuth) {
     this.auth = auth;
@@ -143,11 +147,16 @@ export class DriveClient {
     if (!Array.isArray(data.items)) {
       throw new IncompleteListingError(`no items in listing of ${folder.name} (status ${String(data.status)})`);
     }
+    // Unverified invariant: icloudlite never checked this. Record mismatches
+    // instead of failing until live listings show whether Apple's count can
+    // legitimately differ (hidden entries, packages).
     const expected = data.numberOfItems;
-    if (typeof expected === "number" && expected !== data.items.length) {
-      throw new IncompleteListingError(
-        `listing of ${folder.name} returned ${data.items.length} of ${expected} items`,
-      );
+    this.listingStats.listings++;
+    if (typeof expected === "number") {
+      this.listingStats.withCount++;
+      if (expected !== data.items.length) {
+        this.listingStats.mismatches.push(`${folder.name}: ${data.items.length} of ${expected}`);
+      }
     }
     return (data.items as Json[]).map(toItem);
   }
