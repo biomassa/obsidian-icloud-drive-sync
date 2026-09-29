@@ -1,165 +1,198 @@
 # iCloud Drive Sync for Obsidian
 
-Two-way sync between an Obsidian vault on **Linux or Windows** and the same vault in
-**iCloud Drive**, so it stays in step with Obsidian on your iPhone, iPad and Mac.
+This plugin syncs an Obsidian vault on Linux or Windows with the same vault in iCloud Drive.
+Obsidian on your iPhone, iPad or Mac then shows the same notes.
 
-On Apple devices iCloud Drive syncs vaults by itself. Linux has no iCloud client at all, and this
-plugin is the missing piece: it talks to iCloud Drive directly, from inside Obsidian.
+Apple devices sync iCloud Drive vaults without a plugin. Linux has no iCloud client. This plugin
+connects to iCloud Drive from Obsidian.
 
-> **Status: early (0.1.0).** In daily use on Linux. **Windows is not yet tested.** Keep a backup of
-> your vault before the first sync.
+**Status:** version 0.1.0. It is in daily use on Linux. It is not tested on Windows. Make a backup
+of your vault before the first sync.
 
-## What it does
+## Functions
 
-- Syncs both ways: edits, new files, renames and deletions, in both directions, including your
-  `.obsidian` settings.
-- **Never loses a version.** When a note changed on both sides, both versions are kept as files: the
-  newer under the original name, the other as `name (conflict 2026-09-29 1430).md`.
-- **Never deletes permanently.** A file deleted on one side is moved to the other side's trash: the
-  vault's trash here, *Recently Deleted* on iCloud (recoverable there for 30 days).
-- **Asks before bulk deletions.** More than 3 deletions in one sync (adjustable) wait for your
-  confirmation, in either direction. The question survives restarts, and clears itself if the files
-  turn out to be present after all.
-- **Recognises renames** on both sides, so renaming a folder on your iPhone renames it here instead of
-  deleting and re-downloading everything in it.
-- Syncs a few seconds after you stop typing, and checks iCloud for changes from other devices every
-  2 minutes (adjustable; iCloud cannot notify of changes).
+- The plugin syncs in two directions. It syncs edits, new files, renames and deletions. It also syncs
+  the `.obsidian` settings folder.
+- If a file changes on both sides, the plugin keeps the two versions. The newer version keeps the
+  original name. The other version gets a name such as `note (conflict 2026-09-29 1430).md`.
+- The plugin does not delete files permanently. If you delete a file on one side, the plugin moves
+  the other copy to a trash:
+  - On this computer, it moves the file to the trash of the vault.
+  - On iCloud, it moves the file to Recently Deleted. You can restore it from there for 30 days.
+- If more than 3 files are deleted in one sync, the plugin asks you before it deletes them. You can
+  change this number. The question stays after a restart. If the files come back, the question
+  closes.
+- The plugin finds renames on the two sides. If you rename a folder on your iPhone, the plugin
+  renames the folder here. It does not delete and download the files again.
+- The plugin syncs local changes 3 seconds after you stop typing. It checks iCloud for changes from
+  other devices every 2 minutes. You can change this interval. iCloud does not send notifications
+  of changes.
 
 ## Requirements
 
-- Obsidian **1.11.4 or newer**, on **Linux or Windows** desktop. (It refuses to run on a Mac, where
-  iCloud Drive already syncs the vault, and it cannot run on mobile.)
-- An Apple ID with **iCloud Drive** turned on.
-- **Advanced Data Protection must be off**, and **Access iCloud Data on the Web** must be on
-  (iPhone: Settings → your name → iCloud). The plugin uses iCloud's web interface, the same one
-  icloud.com uses, which Advanced Data Protection disables.
-- An existing vault in iCloud Drive, for example one created by Obsidian on your iPhone.
-- **Linux only:** a keyring (gnome-keyring, KWallet or KeePassXC) so Obsidian can encrypt the stored
-  session. See [Troubleshooting](#troubleshooting) if you use niri, Hyprland, Sway or another
-  desktop that is not GNOME or KDE.
+- Obsidian 1.11.4 or newer, on a Linux or Windows computer.
+  - The plugin does not operate on a Mac, because iCloud Drive syncs the vault there.
+  - The plugin does not operate on mobile devices.
+- An Apple ID with iCloud Drive on.
+- Advanced Data Protection must be off.
+- Access iCloud Data on the Web must be on. On an iPhone, go to Settings > your name > iCloud.
+- A vault in iCloud Drive. For example, a vault that Obsidian on your iPhone made.
+- On Linux: a keyring, for example gnome-keyring, KWallet or KeePassXC. Obsidian uses it to encrypt
+  the session. On desktops other than GNOME and KDE, read [Troubleshooting](#troubleshooting).
 
-## Install (manual)
+The plugin uses the iCloud web interface. This is the interface that icloud.com uses. Advanced Data
+Protection disables this interface.
 
-1. Download `icloud-drive-sync-<version>.zip` from the
-   [latest release](../../releases/latest).
-2. Unzip it into your vault's plugin folder, so that you end up with:
+## Install
+
+1. Download `icloud-drive-sync-<version>.zip` from the [latest release](../../releases/latest).
+2. Extract the zip file into the plugin folder of your vault. The result must be:
    ```
-   <your vault>/.obsidian/plugins/icloud-drive-sync/main.js
-   <your vault>/.obsidian/plugins/icloud-drive-sync/manifest.json
-   <your vault>/.obsidian/plugins/icloud-drive-sync/styles.css
+   <vault>/.obsidian/plugins/icloud-drive-sync/main.js
+   <vault>/.obsidian/plugins/icloud-drive-sync/manifest.json
+   <vault>/.obsidian/plugins/icloud-drive-sync/styles.css
    ```
-   The `.obsidian` folder is hidden; show hidden files, or create the folders by hand. You can also
-   download the three files individually from the release and put them in that folder yourself.
-3. In Obsidian: **Settings → Community plugins**. If asked, turn off Restricted mode. Click the
-   refresh icon next to *Installed plugins*, then enable **iCloud Drive Sync**.
+   The `.obsidian` folder is hidden. Set your file manager to show hidden files.
+3. In Obsidian, open Settings > Community plugins.
+4. If Obsidian shows Restricted mode, turn it off.
+5. Select the refresh icon next to Installed plugins.
+6. Turn on iCloud Drive Sync.
 
-To update, replace the three files with those from a newer release and restart Obsidian (or turn the
-plugin off and on).
+You can also download the three files from the release and put them in the folder yourself.
+
+To update the plugin:
+
+1. Replace the three files with the files from the new release.
+2. Restart Obsidian. Or turn the plugin off and on again.
 
 ## Set up
 
-1. **Settings → iCloud Drive Sync → Apple ID**: enter your Apple ID's email address.
-2. **Sign in…**: enter your password. Apple then shows a prompt on your iPhone or Mac; allow it and type
-   the code it shows (or choose *Text me a code instead*).
-3. **Find vaults** lists the Obsidian vaults in your iCloud Drive. Pick yours from the list, and syncing
-   starts.
+1. Open Settings > iCloud Drive Sync.
+2. In Apple ID, type the email address of your Apple ID.
+3. Select Sign in.
+4. Type your password.
+5. Apple shows a prompt on your iPhone or Mac. Allow it.
+6. Type the code that the prompt shows. To get a code by SMS, select Text me a code instead.
+7. Select Find vaults.
+8. Select your vault in the list. The first sync starts.
 
-**If this vault is new and empty**, the first sync simply downloads the vault from iCloud. Obsidian's
-freshly created default settings are moved to the vault's trash, so your real settings from iCloud
-take their place.
+### First sync
 
-**If this vault already has notes** (say you copied the vault over, or used another sync tool before),
-the first sync compares every file present on both sides by content. It has to download each of them
-once to do so, which can take a while for a large vault; the status bar shows progress. Files that
-match are simply recorded as in sync. Files that differ are kept twice, never overwritten.
+The first sync operates in one of two ways:
 
-Do not run another sync tool on the same vault at the same time. Two tools each see the other's
-writes as edits and fight. If you used obsisync on this vault, stop it first; the plugin refuses to
-start while obsisync is configured for the same folder.
+- **The local vault is new and empty.** The plugin downloads the vault from iCloud. Obsidian makes
+  default settings files for a new vault. The plugin moves these files to the trash of the vault and
+  puts your settings from iCloud in their place.
+- **The local vault already has notes.** The plugin compares each file that is on the two sides. To
+  compare a file, it downloads the file one time. For a large vault, this takes some minutes. The
+  status bar shows the progress. The plugin records equal files as synced. If two files are
+  different, the plugin keeps the two versions. It does not overwrite a file.
 
-## Using it
+Do not use a different sync tool on the same vault at the same time. Two tools see the changes of
+the other tool as edits, and each tool changes the files again. If you used obsisync on this vault,
+stop obsisync first. The plugin does not start while obsisync is set up for the same folder.
 
-- The status bar shows **iCloud ✓** when in sync, a counter while syncing, **⚠** when a decision is
-  waiting (deletions, many conflicts) and **✗** after an error. Click it for details, the pending
-  decisions and a log of recent activity.
-- Commands (Ctrl/Cmd+P): *Sync now*, *Show status*, *Pause syncing*, *Resume syncing*.
-- Pausing stops a sync in progress after the current file; nothing is left half-done.
+## Use
 
-### What is not synced
+- The status bar shows the sync status:
+  - **iCloud ✓**: the vault is in sync.
+  - **A counter**: a sync is in progress.
+  - **⚠**: a decision is necessary, for example about deletions or many conflicts.
+  - **✗**: an error occurred.
+- Select the status bar item to see the details, the decisions and a log of recent activity.
+- To use a command, push Ctrl+P (Cmd+P on a Mac keyboard). The commands are Sync now, Show status,
+  Pause syncing and Resume syncing.
+- Pause stops the sync after the current file. The next sync does the remaining files.
 
-- `.obsidian/workspace.json` and `workspace-mobile.json` (window layouts, rewritten constantly by
-  Obsidian) and iCloud's own duplicates of them.
-- Plugins' **code** (`main.js`, `styles.css`, `manifest.json` under `.obsidian/plugins/`), because desktop
-  and mobile often run different versions. Their **settings** do sync. *Sync plugin code* turns this
-  on.
-- This plugin's own folder, including its settings.
-- The vault's trash, editor temporary files, and macOS/iCloud placeholder files.
-- Anything matching the patterns you add under *Also ignore*: `Archive/` ignores a folder and
-  everything in it, `*.bak` matches file names.
+### Files that do not sync
 
-## Privacy and security
+- `.obsidian/workspace.json` and `.obsidian/workspace-mobile.json`, and the copies of these files that
+  iCloud makes. These files contain the window layout. Obsidian writes them frequently.
+- The code of plugins: `main.js`, `styles.css` and `manifest.json` in `.obsidian/plugins/`. Desktop
+  and mobile devices often use different versions of a plugin. The settings of plugins sync. To sync
+  the code too, turn on Sync plugin code.
+- The folder of this plugin, and its settings.
+- The trash of the vault, temporary files of editors, and placeholder files of macOS and iCloud.
+- The files that match the patterns in Also ignore. `Archive/` ignores a folder and all its contents.
+  `*.bak` matches file names.
 
-- **Your password is used once**, when you click *Sign in*, and is never stored. Signing in is never
-  retried automatically, because repeated failures can lock an Apple ID.
-- The resulting **session** (Apple's session and trust tokens, and cookies) is kept in Obsidian's
-  **secret storage**, which is encrypted by your system's credential store (the keyring on Linux,
-  DPAPI on Windows) and lives in Obsidian's own profile, **outside the vault** — so
-  it never syncs anywhere. The plugin refuses to store it if secret storage is not encrypted.
-- The plugin's settings file (inside the vault) holds only your Apple ID's address and preferences;
-  a test ensures nothing secret can be written there.
-- What was synced when is recorded per device, outside the vault
-  (`~/.local/share/icloud-drive-sync/` on Linux, `%LOCALAPPDATA%\icloud-drive-sync\` on Windows).
-- The plugin talks only to Apple's iCloud servers. No telemetry, no other servers.
+## Security
 
-When your session expires (typically after weeks or months), the plugin first tries to renew it from
-the stored tokens; if Apple asks for a password again, it pauses and tells you to sign in.
+- The plugin uses your password one time, when you select Sign in. It does not keep your password.
+- The plugin does not try to sign in again after a failure. A number of failed sign-ins can lock an
+  Apple ID.
+- The plugin keeps the session in the secret storage of Obsidian. The session contains the session
+  token, the trust token and the cookies from Apple.
+  - Your system encrypts the secret storage: the keyring on Linux, DPAPI on Windows.
+  - The secret storage is in the profile folder of Obsidian. It is not in the vault, so it does not
+    sync.
+  - If the secret storage is not encrypted, the plugin does not keep the session.
+- The settings file of the plugin is in the vault. It contains only your Apple ID email address and
+  your settings. A test makes sure that it cannot contain secret data.
+- The plugin records the sync state of each device outside the vault:
+  - Linux: `~/.local/share/icloud-drive-sync/`
+  - Windows: `%LOCALAPPDATA%\icloud-drive-sync\`
+- The plugin connects only to the iCloud servers of Apple. It does not send telemetry.
+
+A session usually expires after some weeks or months. The plugin then tries to renew the session with
+the stored tokens. If Apple asks for the password, the plugin stops the sync and asks you to sign in.
 
 ## Limitations
 
-- **Apple's unofficial web interface.** iCloud Drive has no public API. This plugin speaks the same
-  protocol as icloud.com (the one the pyicloud project implements), so
-  Apple can change or break it at any time. This project is not affiliated with Apple.
-- **Polling.** Changes from other devices arrive at the next check (every 2 minutes by default).
-- **A small last-writer-wins window.** Before replacing a file on iCloud, the plugin checks that nobody
-  changed it since it last looked, about a second earlier. Apple provides no way to make the
-  replacement itself conditional, so an edit on another device inside that second can be overwritten.
-- Folders emptied by deletions or renames are left behind.
-- Large first syncs of an existing vault download every shared file once to compare them.
+- **Unofficial interface.** iCloud Drive has no public API. The plugin uses the protocol of icloud.com,
+  which the pyicloud project also uses. Apple can change this protocol at any time. This project has
+  no connection with Apple.
+- **Interval.** Changes from other devices arrive at the next check. The default interval is 2
+  minutes.
+- **Short period without a lock.** Before the plugin replaces a file on iCloud, it makes sure that no
+  other device changed the file. It does this approximately 1 second before the replacement. Apple
+  has no function to make the replacement conditional. Thus an edit on a different device in that
+  second can be lost.
+- The plugin does not remove folders that become empty after deletions or renames.
+- The first sync of a vault that already has notes downloads each shared file one time.
 
 ## Troubleshooting
 
-**"Obsidian is storing secrets unencrypted"** (Linux). Electron, which Obsidian is built on, only
-detects the keyring under GNOME and KDE. On other desktops, tell it which one to use: add one line to
-`~/.config/obsidian/user-flags.conf` and restart Obsidian:
+**Obsidian stores secrets without encryption (Linux).** Obsidian uses Electron. Electron finds the
+keyring only on GNOME and KDE. On other desktops, do these steps:
 
-```
---password-store=gnome-libsecret
-```
+1. Open or make the file `~/.config/obsidian/user-flags.conf`.
+2. Add this line for gnome-keyring or KeePassXC:
+   ```
+   --password-store=gnome-libsecret
+   ```
+   For KWallet, add `--password-store=kwallet6` instead.
+3. Restart Obsidian.
 
-(for gnome-keyring or KeePassXC), or `--password-store=kwallet6` for KWallet. If Obsidian is installed as a
-Flatpak or AppImage, pass the same flag on its command line instead.
+If you use Obsidian as a Flatpak or AppImage, add the same flag to the command line.
 
-**Sign-in is rejected.** Check the password on icloud.com in a private window first. Don't try
-repeatedly: Apple locks an Apple ID after a few failures (unlock at
-[iforgot.apple.com](https://iforgot.apple.com)).
+**Apple does not accept the sign-in.**
 
-**"iCloud Drive web access" / service not activated.** Sign in at icloud.com once, and check that
-Advanced Data Protection is off and web access is on.
+1. Open icloud.com in a private browser window.
+2. Sign in there to make sure that the password is correct.
+3. Do not try again many times. Apple locks an Apple ID after some failures. To unlock it, go to
+   [iforgot.apple.com](https://iforgot.apple.com).
 
-**Every connection stalls.** Some networks advertise IPv6 without routing it. Turn on *Use IPv4 only*.
+**The iCloud Drive web service is not available.**
+
+1. Sign in at icloud.com one time.
+2. Make sure that Advanced Data Protection is off.
+3. Make sure that Access iCloud Data on the Web is on.
+
+**All connections stop.** Some networks show IPv6 but do not send IPv6 data. Turn on Use IPv4 only.
 
 ## Build from source
 
 ```
 npm ci
-npm test          # 109 tests, run directly as TypeScript (Node 23.6 or newer)
-npm run build     # main.js
-npm run package   # dist/icloud-drive-sync-<version>.zip
+npm test          # 109 tests, run as TypeScript (Node 23.6 or newer)
+npm run build     # makes main.js
+npm run package   # makes dist/icloud-drive-sync-<version>.zip
 ```
 
-`PLAN.md` records the design decisions, and what was verified against iCloud and how.
+`PLAN.md` contains the design decisions and the tests against iCloud.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The iCloud client (`src/icloud/`) is a TypeScript port of code derived
-from pyicloud, used under its MIT license, reproduced in [LICENSE.pyicloud](LICENSE.pyicloud).
+MIT. Refer to [LICENSE](LICENSE). The iCloud client (`src/icloud/`) is a TypeScript port of code from
+pyicloud. The pyicloud MIT license is in [LICENSE.pyicloud](LICENSE.pyicloud).
