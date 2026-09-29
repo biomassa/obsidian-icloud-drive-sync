@@ -107,7 +107,17 @@ obsisync's `_assert_secure_keyring()` does.
          refusal on plaintext secret storage or an obsisync-managed vault, plugin code excluded
    - [x] UI: sign-in and 2FA dialogs, status view with deletion / conflict / ignored decisions,
          settings tab with vault discovery, status bar, commands, ribbon icon
-   - [ ] manual test in `~/obsi-plugin-test` ↔ iCloud `icloudsync-plugin-test`
+   - [x] manual test in `~/obsi-plugin-test` ↔ iCloud `icloudsync-plugin-test` (2026-09-29):
+         password + 2FA sign-in from inside Obsidian works (Electron's TLS is accepted);
+         first upload, same-size edit and a rename all verified byte-identical afterwards.
+         Found: under niri, Electron stores secrets as plaintext unless Obsidian gets
+         `--password-store=gnome-libsecret` (the plugin now says so)
+
+   Still to do:
+   - warn when Obsidian's own Sync core plugin is active on the same vault
+   - prune folders emptied by deletions and renames
+   - a progress view for the first run on a real vault (hundreds of MB compared)
+   - test on Windows; community-plugin review (it needs Node APIs, so desktop-only)
 
    Constraints found so far:
    - Reuse a recent remote scan for watcher-triggered cycles; walk the whole tree only on the

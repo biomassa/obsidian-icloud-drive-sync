@@ -839,6 +839,29 @@ async function main(): Promise<void> {
       return e2e(cfg);
     case "plan-real":
       return planReal(cfg);
+    case "compare-tree": {
+      // Byte-compare a local folder with an iCloud folder (read-only).
+      const [localDir, icloudPath] = rest;
+      if (!localDir || !icloudPath) throw new Error("usage: compare-tree <local folder> <iCloud folder path>");
+      const auth = await signedIn(cfg);
+      const drive = new DriveClient(auth);
+      const filter = new IgnoreFilter([".obsidian/plugins/icloud-drive-sync/", ".obsidian/plugins/*/main.js", ".obsidian/plugins/*/styles.css", ".obsidian/plugins/*/manifest.json"]);
+      const local = new NodeLocalFs({ root: localDir, filter });
+      const remote = new ICloudRemote({ drive, vaultPath: icloudPath.split("/"), filter });
+      const [l, r] = [await local.scan(), await remote.scan()];
+      let diffs = 0;
+      for (const k of [...new Set([...l.entries.keys(), ...r.entries.keys()])].sort()) {
+        const le = l.entries.get(k), re = r.entries.get(k);
+        let state = "same";
+        if (!le || !re) state = le ? "ONLY LOCAL" : "ONLY ICLOUD";
+        else if (Buffer.compare(Buffer.from(await local.read(k)), Buffer.from(await remote.download(re))) !== 0) state = "DIFFERENT";
+        if (state !== "same") diffs++;
+        log(`  ${state.padEnd(11)} ${k}`);
+      }
+      log(diffs ? `${diffs} difference(s)` : `identical: ${l.entries.size} files`);
+      await auth.session.persist();
+      return;
+    }
     case "mkroot": {
       // Create an empty folder at the iCloud Drive root, for a throwaway test vault.
       const name = rest[0];
