@@ -91,11 +91,22 @@ export class SrpClient {
   readonly accountName: string;
   private readonly a: bigint;
   readonly A: bigint;
+  /** The secret ephemeral, exposed so a proof can be cross-checked before it is sent. */
+  readonly ephemeral: Uint8Array;
 
-  /** `ephemeral` is for tests; production draws 256 random bytes like pysrp. */
+  /**
+   * By default a 32-byte ephemeral with the top bit set — what pysrp's OpenSSL
+   * backend (`BN_rand(a, 256, 0, 0)`) draws, and so what Apple sees from
+   * obsisync today. Tests may pass a fixed one.
+   */
   constructor(accountName: string, ephemeral?: Uint8Array) {
     this.accountName = accountName;
-    const aBytes = ephemeral ?? new Uint8Array(randomBytes(256));
+    let aBytes = ephemeral;
+    if (!aBytes) {
+      aBytes = new Uint8Array(randomBytes(32));
+      aBytes[0]! |= 0x80;
+    }
+    this.ephemeral = aBytes;
     this.a = bytesToBigInt(aBytes);
     this.A = modPow(g, this.a, N);
   }

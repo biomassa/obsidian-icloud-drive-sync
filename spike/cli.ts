@@ -2,8 +2,12 @@
  * Phase-1 spike: prove the TypeScript iCloud client works against Apple, from
  * plain Node, before any plugin code depends on it.
  *
- *   node spike/cli.ts login [--sms] [--ask-password]
- *                                      sign in; 2FA if needed
+ *   node spike/cli.ts login [--sms] [--ask-password] [--dry-run]
+ *                                      sign in; 2FA if needed. Before the proof
+ *                                      is sent, it is recomputed by obsisync's
+ *                                      Python and the sign-in aborts on any
+ *                                      difference. --dry-run stops there, so
+ *                                      Apple never receives a proof at all.
  *   node spike/cli.ts status           resume from stored tokens only
  *   node spike/cli.ts ls [path]        list a folder (default: the vault)
  *   node spike/cli.ts compare <path>   download a vault file, compare with the local copy
@@ -26,9 +30,10 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 
-import { ICloudAuth } from "../src/icloud/auth.ts";
+import { ICloudAuth, type SrpProofCheck } from "../src/icloud/auth.ts";
+import { b64encode } from "../src/icloud/bytes.ts";
 import { DriveClient, isFolderLike, type DriveItem } from "../src/icloud/drive.ts";
-import { nodeTransport } from "../src/icloud/http.ts";
+import { nodeTransport, type Transport } from "../src/icloud/http.ts";
 import { FileSessionStore } from "../src/icloud/store.ts";
 
 const STATE_DIR = join(homedir(), ".local/share/icloud-obsi-spike");
@@ -119,13 +124,82 @@ async function waitForCode(timeoutMs = 10 * 60_000): Promise<string> {
   throw new Error("timed out waiting for the 2FA code");
 }
 
-async function openAuth(cfg: ObsisyncConfig): Promise<ICloudAuth> {
+const PYTHON = join(homedir(), "scripts/obsisync/.venv/bin/python");
+const CROSSCHECK = new URL("../tools/srp_crosscheck.py", import.meta.url).pathname;
+
+class DryRunStop extends Error {}
+
+/**
+ * Recompute the proof with obsisync's Python and refuse to continue unless
+ * both agree. Runs after Apple's challenge and before the proof is sent, so a
+ * disagreement costs no sign-in attempt.
+ */
+function crossCheck(dryRun: boolean) {
+  return async (c: SrpProofCheck): Promise<void> => {
+    const out = execFileSync(PYTHON, [CROSSCHECK], {
+      // The password goes over stdin, never on the command line.
+      input: JSON.stringify({
+        account: c.accountName,
+        password: c.password,
+        a: b64encode(c.ephemeral),
+        salt: b64encode(c.salt),
+        B: b64encode(c.B),
+        iterations: c.iterations,
+        protocol: c.protocol,
+      }),
+      encoding: "utf8",
+    });
+    const py = JSON.parse(out) as { backend: string; A: string; M1: string; M2: string };
+    const same = {
+      A: py.A === b64encode(c.A),
+      M1: py.M1 === b64encode(c.M1),
+      M2: py.M2 === b64encode(c.M2),
+    };
+    log(`cross-check vs ${py.backend}: A ${same.A ? "match" : "DIFFER"}, ` +
+      `M1 ${same.M1 ? "match" : "DIFFER"}, M2 ${same.M2 ? "match" : "DIFFER"}`);
+    if (!same.A || !same.M1 || !same.M2) {
+      throw new Error("TypeScript and Python disagree on the SRP proof; nothing was sent to Apple");
+    }
+    if (dryRun) throw new DryRunStop("dry run: proofs agree; stopping before sending anything to Apple");
+  };
+}
+
+/**
+ * Log each request's path and status, with the *names* of the cookies sent and
+ * set. Values are never printed. Shows whether cookies Apple sets during
+ * sign-in are sent back on the following requests.
+ */
+function tracing(inner: Transport): Transport {
+  return async (req) => {
+    const res = await inner(req);
+    const url = new URL(req.url);
+    const sent = (req.headers["Cookie"] ?? "")
+      .split("; ")
+      .filter(Boolean)
+      .map((c) => c.split("=")[0]);
+    const set = res.setCookies.map((c) => {
+      const domain = /;\s*domain=([^;]+)/i.exec(c)?.[1]?.trim();
+      const path = /;\s*path=([^;]+)/i.exec(c)?.[1]?.trim();
+      return `${c.split("=")[0]}@${domain ?? "(host)"}${path ?? "(default path)"}`;
+    });
+    const appleHeaders = Object.keys(res.headers).filter((h) => h.startsWith("x-apple") || h === "scnt");
+    log(`  ${req.method} ${url.hostname}${url.pathname} -> ${res.status}`);
+    log(`      cookies sent: [${sent.join(", ")}]  set: [${set.join(", ")}]`);
+    log(`      apple headers: [${appleHeaders.join(", ")}]`);
+    return res;
+  };
+}
+
+async function openAuth(cfg: ObsisyncConfig, verify?: (c: SrpProofCheck) => Promise<void>, trace = false): Promise<ICloudAuth> {
   return ICloudAuth.open({
     accountName: cfg.apple_id,
     store: new FileSessionStore(join(STATE_DIR, "session.json"), cfg.apple_id),
-    transport: nodeTransport({ family: cfg.force_ipv4 ? 4 : 0 }),
+    transport: trace
+      ? tracing(nodeTransport({ family: cfg.force_ipv4 ? 4 : 0 }))
+      : nodeTransport({ family: cfg.force_ipv4 ? 4 : 0 }),
     bridge: { family: cfg.force_ipv4 ? 4 : 0 },
     onDiagnostic: (m) => log(m),
+    verifySrpProof: verify,
   });
 }
 
@@ -136,15 +210,27 @@ async function signedIn(cfg: ObsisyncConfig): Promise<ICloudAuth> {
   return auth;
 }
 
-async function login(cfg: ObsisyncConfig, preferSms: boolean, askPassword: boolean): Promise<void> {
-  const auth = await openAuth(cfg);
+async function login(
+  cfg: ObsisyncConfig,
+  preferSms: boolean,
+  askPassword: boolean,
+  dryRun: boolean,
+): Promise<void> {
+  if (!existsSync(PYTHON)) throw new Error(`obsisync's Python is needed for the cross-check: ${PYTHON}`);
+  const auth = await openAuth(cfg, crossCheck(dryRun), dryRun);
   log(`signing in as ${cfg.apple_id}`);
   // One attempt only. A rejected password is not retried: repeated SRP failures
   // count toward an Apple ID lockout, and the diagnostic line above says why.
   const password = askPassword
     ? await askHidden(`Apple ID password for ${cfg.apple_id}: `)
     : keyringPassword(cfg.apple_id);
-  const result = await auth.signIn(password);
+  let result;
+  try {
+    result = await auth.signIn(password);
+  } catch (e) {
+    if (e instanceof DryRunStop) return log(e.message);
+    throw e;
+  }
   if (result.status === "signed-in") {
     log("signed in without a code (stored trust token accepted)");
   } else {
@@ -289,7 +375,7 @@ async function main(): Promise<void> {
   const cfg = obsisyncConfig();
   switch (command) {
     case "login":
-      return login(cfg, rest.includes("--sms"), rest.includes("--ask-password"));
+      return login(cfg, rest.includes("--sms"), rest.includes("--ask-password"), rest.includes("--dry-run"));
     case "status": {
       const auth = await openAuth(cfg);
       const ok = await auth.resume();

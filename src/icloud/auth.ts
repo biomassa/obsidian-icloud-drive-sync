@@ -108,6 +108,25 @@ export interface ICloudAuthOptions {
   bridge?: BridgeOptions;
   /** Non-secret facts about a sign-in, for diagnosing a rejected password. */
   onDiagnostic?: (message: string) => void;
+  /**
+   * Called with the SRP proof after Apple's challenge and *before* it is sent.
+   * Throwing aborts the sign-in without Apple ever seeing the proof — which is
+   * what a failed attempt, and so an account lockout, is counted from.
+   */
+  verifySrpProof?: (check: SrpProofCheck) => Promise<void>;
+}
+
+export interface SrpProofCheck {
+  accountName: string;
+  password: string;
+  ephemeral: Uint8Array;
+  salt: Uint8Array;
+  B: Uint8Array;
+  iterations: number;
+  protocol: SrpProtocol;
+  A: Uint8Array;
+  M1: Uint8Array;
+  M2: Uint8Array;
 }
 
 export class ICloudAuth {
@@ -122,6 +141,7 @@ export class ICloudAuth {
   private readonly setupEndpoint: string;
   private readonly bridge: TrustedDeviceBridge;
   private readonly diagnostic: (message: string) => void;
+  private readonly verifySrpProof: ((check: SrpProofCheck) => Promise<void>) | undefined;
 
   private authData: Json = {};
   private boot: Hsa2BootContext | null = null;
@@ -140,6 +160,7 @@ export class ICloudAuth {
     this.session = session;
     this.bridge = new TrustedDeviceBridge(options.bridge);
     this.diagnostic = options.onDiagnostic ?? (() => undefined);
+    this.verifySrpProof = options.verifySrpProof;
     if (!session.data.client_id) session.data.client_id = randomUUID().toLowerCase();
     this.params = { ...PARAMS, clientId: session.data.client_id };
   }
@@ -312,11 +333,21 @@ export class ICloudAuth {
       `srp: protocol=${protocol} iterations=${String(init.iteration)} salt=${salt.length}B ` +
         `leadingZero=${salt[0] === 0} trustToken=${this.session.data.trust_token ? "sent" : "none"}`,
     );
-    const proof = client.processChallenge(password, {
+    const challenge = {
       salt,
       B: b64decode(String(init.b)),
       iterations: Number(init.iteration),
       protocol,
+    };
+    const proof = client.processChallenge(password, challenge);
+    await this.verifySrpProof?.({
+      accountName: this.accountName,
+      password,
+      ephemeral: client.ephemeral,
+      ...challenge,
+      A: client.publicKey,
+      M1: proof.M1,
+      M2: proof.M2,
     });
 
     const body: Json = {
