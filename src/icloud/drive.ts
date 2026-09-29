@@ -12,10 +12,9 @@
  * - Replacing a file uploads the new content first, under a hidden temporary
  *   name, and only then trashes the old one and renames. The Python deleted
  *   first, so a failed upload lost the file on both sides.
- * - A listing without an `items` array is an error, not an empty folder: a
- *   truncated listing looks exactly like deleted files. Whether `numberOfItems`
- *   can be trusted as a second check is recorded in `listingStats` until live
- *   data settles it.
+ * - A listing without an `items` array, or with fewer items than its
+ *   `numberOfItems`, is an error rather than a short folder: a truncated
+ *   listing looks exactly like deleted files.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 
@@ -147,15 +146,17 @@ export class DriveClient {
     if (!Array.isArray(data.items)) {
       throw new IncompleteListingError(`no items in listing of ${folder.name} (status ${String(data.status)})`);
     }
-    // Unverified invariant: icloudlite never checked this. Record mismatches
-    // instead of failing until live listings show whether Apple's count can
-    // legitimately differ (hidden entries, packages).
+    // numberOfItems matched items.length on all 98 folders of a real vault
+    // (spike, 2026-09-29), so a mismatch is treated as a truncated listing.
     const expected = data.numberOfItems;
     this.listingStats.listings++;
     if (typeof expected === "number") {
       this.listingStats.withCount++;
       if (expected !== data.items.length) {
         this.listingStats.mismatches.push(`${folder.name}: ${data.items.length} of ${expected}`);
+        throw new IncompleteListingError(
+          `listing of ${folder.name} returned ${data.items.length} of ${expected} items`,
+        );
       }
     }
     return (data.items as Json[]).map(toItem);

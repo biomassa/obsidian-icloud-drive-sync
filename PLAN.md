@@ -34,10 +34,23 @@ obsisync's `_assert_secure_keyring()` does.
    - [x] SRP parity with icloudlite (offline vectors)
    - [x] SPAKE2 prover and push-protocol parity (offline vectors)
    - [x] sign-in state machine and bridge flow against simulated Apple
-   - [ ] live sign-in with 2FA; trust token survives a second run with no code
-   - [ ] list the vault; file count matches obsisync's tracked count
-   - [ ] download a file byte-identical to the local copy
-   - [ ] upload / same-size replace / trash in a throwaway root folder
+   - [x] live sign-in with trusted-device 2FA; trust token survives a fresh process
+   - [x] walk the vault: 895 files / 98 folders; all 833 obsisync paths found, the 62 extra
+         all explained by obsisync's ignore patterns; every file has an etag; `numberOfItems`
+         matched on every folder. 6 s with 8 concurrent listings (209 s sequentially)
+   - [x] downloads byte-identical (8 KB note, 2.2 MB image)
+   - [x] upload, same-size replace (one `note.md` afterwards, new etag), empty file, nested
+         folder, trash — all in a throwaway root folder
+
+   Spike findings to carry into phase 2:
+   - **Requests must match python-requests byte for byte.** The first live sign-in was
+     rejected (-20101) with the right password and a proof identical to Python's; after
+     matching JSON separators, header order, `Accept-Encoding` and `Connection`, the next one
+     was accepted. Which difference mattered is unknown — keep all of them.
+   - **Replace costs a Recently Deleted entry per edit.** Upload-then-trash is safe, but every
+     synced edit leaves the previous version in Recently Deleted. Investigate updating a
+     document in place (`update/documents` against the existing document) before phase 3.
+   - A replace takes ~10 s (upload, list, trash, rename); uploads ~3 s, listings ~1 s.
 2. **Sync engine in pure TypeScript** (no Obsidian imports; injected fs and remote):
    - plan (base state + local scan + remote scan → actions), check guards on the whole plan,
      then execute; a file is recorded synced only after its transfer succeeds
@@ -57,6 +70,13 @@ obsisync's `_assert_secure_keyring()` does.
 - Never run the plugin and obsisync against the same vault.
 - The spike only reads the vault; `write-test` works in `icloudsync-spike-test/` at the Drive
   root and trashes it afterwards.
+
+## Live sign-in safety
+
+Two failed sign-ins locked the Apple ID on 2026-09-29. Every live sign-in now recomputes the
+SRP proof with obsisync's Python on Apple's real challenge and aborts, with nothing sent,
+unless both agree (`verifySrpProof`, `spike/cli.ts --dry-run`). One attempt at a time, run by
+the user in their own terminal.
 
 ## Known divergences from icloudlite
 

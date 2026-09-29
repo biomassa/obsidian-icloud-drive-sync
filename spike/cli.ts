@@ -24,7 +24,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -259,14 +259,37 @@ async function vaultRoot(drive: DriveClient, cfg: ObsisyncConfig): Promise<Drive
   return node;
 }
 
-/** Count files under a folder, walking every subfolder with fresh listings. */
-async function walk(drive: DriveClient, folder: DriveItem, prefix = ""): Promise<Map<string, DriveItem>> {
+/**
+ * Every file under a folder, with fresh listings, `concurrency` folders at a
+ * time. Listing one folder at a time took 209 s for 98 folders; each request
+ * is mostly waiting on Apple, so they overlap well.
+ */
+async function walk(drive: DriveClient, root: DriveItem, concurrency = 8): Promise<Map<string, DriveItem>> {
   const out = new Map<string, DriveItem>();
-  for (const child of await drive.list(folder)) {
-    const rel = prefix ? `${prefix}/${child.name}` : child.name;
-    if (isFolderLike(child)) for (const [k, v] of await walk(drive, child, rel)) out.set(k, v);
-    else out.set(rel, child);
-  }
+  const queue: { folder: DriveItem; prefix: string }[] = [{ folder: root, prefix: "" }];
+  let active = 0;
+  await new Promise<void>((resolve, reject) => {
+    const pump = () => {
+      if (!queue.length && !active) return resolve();
+      while (active < concurrency && queue.length) {
+        const { folder, prefix } = queue.shift()!;
+        active++;
+        drive.list(folder).then(
+          (children) => {
+            for (const child of children) {
+              const rel = prefix ? `${prefix}/${child.name}` : child.name;
+              if (isFolderLike(child)) queue.push({ folder: child, prefix: rel });
+              else out.set(rel, child);
+            }
+            active--;
+            pump();
+          },
+          reject,
+        );
+      }
+    };
+    pump();
+  });
   return out;
 }
 
@@ -312,8 +335,9 @@ function diffAgainstObsisync(remote: Set<string>): void {
   const onlyTracked = [...tracked].filter((p) => !remote.has(p));
   log(`obsisync tracks ${tracked.size}; walk found ${remote.size}`);
   log(`only on iCloud walk: ${onlyRemote.length}; only in obsisync: ${onlyTracked.length}`);
-  for (const p of onlyRemote.slice(0, 15)) log(`  + ${p}`);
-  for (const p of onlyTracked.slice(0, 15)) log(`  - ${p}`);
+  const report = join(STATE_DIR, "walk-diff.txt");
+  writeFileSync(report, [...onlyRemote.map((p) => `+ ${p}`), ...onlyTracked.map((p) => `- ${p}`)].join("\n") + "\n");
+  log(`full list: ${report}`);
 }
 
 async function compare(cfg: ObsisyncConfig, relPath: string): Promise<void> {
