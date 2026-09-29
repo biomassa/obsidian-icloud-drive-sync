@@ -32,7 +32,14 @@ export const DEFAULT_IGNORE: readonly string[] = [
   // rewritten constantly by Obsidian; syncing them fights between devices
   ".obsidian/workspace.json",
   ".obsidian/workspace-mobile.json",
-  // iCloud's own conflict copies of those two
+  ".obsidian/workspace", // older Obsidian versions, no extension
+  // iCloud's own duplicates of those, from its conflict handling: "workspace
+  // 12.json" and "workspace.json.conflict3". Found by the thirty in the real
+  // vault. The space keeps "workspaces.json" (saved layouts) syncing.
+  ".obsidian/workspace *.json",
+  ".obsidian/workspace-mobile *.json",
+  ".obsidian/workspace(*).json",
+  ".obsidian/workspace-mobile(*).json",
   ".obsidian/workspace.json.conflict*",
   ".obsidian/workspace-mobile.json.conflict*",
 ];

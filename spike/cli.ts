@@ -35,7 +35,8 @@ import { b64encode } from "../src/icloud/bytes.ts";
 import { DriveClient, isFolderLike, type DriveItem } from "../src/icloud/drive.ts";
 import { nodeTransport, type Transport } from "../src/icloud/http.ts";
 import { FileSessionStore } from "../src/icloud/store.ts";
-import { SyncEngine, describe } from "../src/sync/engine.ts";
+import { SyncEngine, describe, sha256 } from "../src/sync/engine.ts";
+import { planSync } from "../src/sync/planner.ts";
 import { IgnoreFilter } from "../src/sync/filters.ts";
 import { ICloudRemote } from "../src/sync/icloud-remote.ts";
 import { NodeLocalFs } from "../src/sync/node-local.ts";
@@ -384,7 +385,14 @@ async function writeTest(cfg: ObsisyncConfig): Promise<void> {
   const down1 = await step("download v1", () => drive.download(first));
   log(`    v1 round-trip ${Buffer.compare(Buffer.from(down1), Buffer.from(v1)) === 0 ? "IDENTICAL" : "DIFFERENT"}`);
 
-  await step("replace with v2 (same size, one byte differs)", () => drive.replace(folder!, first, v2));
+  await step("replace with v2 in place (same size, one byte differs)", async () => {
+    const { signature } = await drive.stageContent(folder!.zone, "note.md", v2);
+    await drive.updateDocumentsRaw(folder!.zone, {
+      data: signature, command: "add_file", create_short_guid: true, document_id: first.docwsid,
+      path: { starting_document_id: folder!.docwsid, path: "note.md" }, allow_conflict: false,
+      file_flags: { is_writable: true, is_executable: false, is_hidden: false }, mtime: Date.now(), btime: Date.now(),
+    });
+  });
   listing = await drive.list(folder);
   log(`    folder now holds: ${listing.map((c) => c.name).join(", ")}`);
   const second = listing.find((c) => c.name === "note.md");
@@ -677,6 +685,38 @@ async function e2e(cfg: ObsisyncConfig): Promise<void> {
     await cycle("cycle 2");
     await compareTrees("after step 2");
 
+    log("step 2b: the base recorded after an in-place update matches iCloud");
+    await new Promise((r) => setTimeout(r, 2500));
+    await put("Notes/todo.md", "- [x] buy MILK\n");
+    await cycle("cycle 2b-1");
+    const stored = JSON.parse(await readFileP(statePath, "utf8")).base.find((b: { key: string }) => b.key === "Notes/todo.md");
+    const listed = (await other.scan()).entries.get("Notes/todo.md")!;
+    const docOk = stored?.remoteDocId === listed.docId;
+    const etagOk = stored?.remoteEtag === listed.etag;
+    log(`  stored docId ${stored?.remoteDocId} vs listed ${listed.docId}: ${docOk ? "match" : "MISMATCH"}`);
+    log(`  stored etag  ${stored?.remoteEtag} vs listed ${listed.etag}: ${etagOk ? "match" : "MISMATCH"}`);
+    if (!docOk || !etagOk) failures++;
+    await new Promise((r) => setTimeout(r, 2500));
+    const settle = await cycle("cycle 2b-2 (should do nothing)");
+    if (settle.done.some((d) => d.action.kind !== "refreshBase")) {
+      log("  UNEXPECTED: the cycle after an in-place update transferred something");
+      failures++;
+    }
+    await put("Notes/todo.md", "- [x] buy milk!\n");
+    const again = await cycle("cycle 2b-3 (second edit: a plain upload)");
+    if (!again.done.some((d) => d.action.kind === "upload") || again.done.some((d) => d.action.kind === "conflict")) {
+      log("  UNEXPECTED: a second local edit was not a plain upload");
+      failures++;
+    }
+    const todoItem = (await other.scan()).entries.get("Notes/todo.md")!;
+    await drive.rename(todoItem.handle as DriveItem, "todo-renamed-on-phone.md");
+    const renamed = await cycle("cycle 2b-4 (phone renamed a file this device updated)");
+    if (!renamed.done.some((d) => d.action.kind === "renameLocal")) {
+      log("  UNEXPECTED: the rename was not recognised (document id not tracked after update)");
+      failures++;
+    }
+    await compareTrees("after step 2b");
+
     log("step 3: the same note edited on both sides");
     await put("Welcome.md", "# Welcome, edited on this computer\n");
     const snap3 = await other.scan();
@@ -685,7 +725,7 @@ async function e2e(cfg: ObsisyncConfig): Promise<void> {
     await compareTrees("after step 3");
 
     log("step 4: one deletion on each side");
-    await rmP(join(localRoot, "Notes/todo.md"));
+    await rmP(join(localRoot, "Notes/todo-renamed-on-phone.md"));
     const snap4 = await other.scan();
     await other.trash(snap4.entries.get("Notes/long.md")!);
     await cycle("cycle 4");
@@ -711,6 +751,62 @@ async function e2e(cfg: ObsisyncConfig): Promise<void> {
   }
   log(failures ? `E2E: ${failures} problem(s)` : "E2E: all steps verified");
   if (failures) process.exitCode = 1;
+}
+
+/**
+ * What would the first run do to the real vault? Scans and hashes both sides
+ * and prints the plan against an empty base. Read-only: nothing is executed
+ * and no state is written, locally or on iCloud.
+ */
+async function planReal(cfg: ObsisyncConfig): Promise<void> {
+  const auth = await signedIn(cfg);
+  const drive = new DriveClient(auth);
+  const filter = new IgnoreFilter();
+  const local = new NodeLocalFs({ root: cfg.local_path, filter });
+  const remote = new ICloudRemote({ drive, vaultPath: cfg.vault_name.split("/"), filter });
+  let t = Date.now();
+  const ls = await local.scan();
+  log(`local scan: ${ls.entries.size} files, ${ls.skipped.length} skipped, ${Date.now() - t} ms`);
+  for (const s of ls.skipped) log(`  skipped ${s.key}: ${s.reason}`);
+  t = Date.now();
+  let bytes = 0;
+  for (const e of ls.entries.values()) {
+    const data = await local.read(e.key);
+    bytes += data.length;
+    e.hash = sha256(data);
+    e.hashedAtMs = Date.now();
+  }
+  log(`hashing: ${(bytes / 1e6).toFixed(1)} MB in ${Date.now() - t} ms`);
+  t = Date.now();
+  const rs = await remote.scan();
+  log(`iCloud scan: ${rs.entries.size} files, ${(rs.skipped ?? []).length} skipped, ${Date.now() - t} ms`);
+  const largest = [...ls.entries.values()].sort((a, b) => b.size - a.size).slice(0, 5);
+  log(`largest local files: ${largest.map((e) => `${e.key} (${(e.size / 1e6).toFixed(1)} MB)`).join(", ")}`);
+  const result = planSync({
+    base: new Map(),
+    local: ls,
+    remote: rs,
+    pending: new Map(),
+    filter,
+    options: { allowManyConflicts: true, now: Date.now() },
+  });
+  if (!result.ok) return log(`plan aborted: ${JSON.stringify(result.abort)}`);
+  const byKind = new Map<string, string[]>();
+  for (const a of result.plan.actions) {
+    const k = "key" in a ? a.key : `${a.from} → ${a.to}`;
+    byKind.set(a.kind, [...(byKind.get(a.kind) ?? []), k]);
+  }
+  log("first-run plan (nothing executed):");
+  for (const [kind, keys] of byKind) {
+    log(`  ${kind}: ${keys.length}`);
+    if (kind !== "compare") for (const k of keys.slice(0, 60)) log(`      ${k}`);
+  }
+  const compareBytes = result.plan.actions
+    .filter((a) => a.kind === "compare")
+    .reduce((n, a) => n + (a as { remote: { size: number } }).remote.size, 0);
+  log(`  compare would download ${(compareBytes / 1e6).toFixed(1)} MB to check content`);
+  log(`peak memory: rss ${(process.memoryUsage().rss / 1e6).toFixed(0)} MB`);
+  await auth.session.persist();
 }
 
 async function main(): Promise<void> {
@@ -741,6 +837,8 @@ async function main(): Promise<void> {
       return semantics3(cfg);
     case "e2e":
       return e2e(cfg);
+    case "plan-real":
+      return planReal(cfg);
     default:
       console.log("usage: node spike/cli.ts login [--sms] | status | ls [path] | compare <path> | write-test");
   }

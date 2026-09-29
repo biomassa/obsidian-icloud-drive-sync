@@ -9,14 +9,14 @@
  *   so every stored etag was empty and remote change detection was mtime-only.
  * - Removing a file moves it to Recently Deleted (`moveItemsToTrash`). The
  *   Python's `delete()` called `/deleteItems`, the permanent-delete endpoint.
- * - Replacing a file uploads the new content first, under a hidden temporary
- *   name, and only then trashes the old one and renames. The Python deleted
- *   first, so a failed upload lost the file on both sides.
+ * - Replacing a file is an in-place update of the same document (see
+ *   ICloudRemote). The Python deleted first and then uploaded, so a failed
+ *   upload lost the file on both sides.
  * - A listing without an `items` array, or with fewer items than its
  *   `numberOfItems`, is an error rather than a short folder: a truncated
  *   listing looks exactly like deleted files.
  */
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import type { ICloudAuth } from "./auth.ts";
 import { ApiError, ICloudError } from "./errors.ts";
@@ -94,11 +94,6 @@ function guessContentType(name: string): string {
     canvas: "application/json",
   };
   return types[ext] ?? "";
-}
-
-/** A dot-prefixed temporary name: Obsidian and the sync filters both skip dotfiles in folders. */
-export function temporaryUploadName(name: string): string {
-  return `.icloudsync-tmp-${randomBytes(6).toString("hex")}-${name}`;
 }
 
 export class DriveClient {
@@ -208,8 +203,8 @@ export class DriveClient {
   /**
    * Upload `data` as a new file named `name` in `folder`.
    *
-   * Apple allows a conflict here: if the name is taken it creates "name 2".
-   * Callers that mean to replace use `replace()`.
+   * With allowConflict (the default) a taken name becomes "name 2"; without
+   * it the upload fails. Replacing a file in place is ICloudRemote.upload's job.
    */
   async upload(
     folder: DriveItem,
@@ -279,29 +274,6 @@ export class DriveClient {
       json: body,
     });
     return responseJson<Json>(res);
-  }
-
-  /**
-   * Replace `existing` with `data`, never leaving a moment with neither copy:
-   * upload under a temporary name, trash the old file, then rename.
-   *
-   * If the final rename fails, the new content is safe under the temporary name
-   * and the old copy is in Recently Deleted; the error says so.
-   */
-  async replace(folder: DriveItem, existing: DriveItem, data: Uint8Array, mtimeMs = Date.now()): Promise<void> {
-    const temp = temporaryUploadName(existing.name);
-    await this.upload(folder, temp, data, mtimeMs);
-    const uploaded = await this.child(folder, temp);
-    if (!uploaded) throw new ApiError(`uploaded copy of ${existing.name} did not appear`);
-    await this.trash(existing);
-    try {
-      await this.rename(uploaded, existing.name);
-    } catch (e) {
-      throw new ApiError(
-        `${existing.name}: the new version was uploaded as ${temp} and the old one moved to ` +
-          `Recently Deleted, but renaming failed (${e instanceof Error ? e.message : String(e)})`,
-      );
-    }
   }
 
   async mkdir(parent: DriveItem, name: string): Promise<DriveItem> {

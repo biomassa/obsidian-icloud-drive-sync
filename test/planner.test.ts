@@ -316,6 +316,10 @@ test("ignore patterns: folders cover their contents; workspaces.json is user dat
   assert.equal(f.ignores(".obsidian/workspace.json"), true);
   assert.equal(f.ignores(".obsidian/workspace.json.conflict3"), true);
   assert.equal(f.ignores(".obsidian/workspaces.json"), false, "saved workspaces must sync");
+  assert.equal(f.ignores(".obsidian/workspace 12.json"), true, "iCloud's duplicates");
+  assert.equal(f.ignores(".obsidian/workspace-mobile 3.json"), true);
+  assert.equal(f.ignores(".obsidian/workspace"), true);
+  assert.equal(f.ignores(".obsidian/workspace(1).json"), true);
   assert.equal(f.ignores(".obsidian/app.json"), false);
   assert.equal(f.ignores("Archived.md"), false);
 });

@@ -88,8 +88,31 @@ obsisync's `_assert_secure_keyring()` does.
          edit, renames both ways, conflict, deletions both ways, quiet cycles — trees identical
          after every step
 
-   Left for later: pruning folders emptied by deletions; the first run against an existing
-   vault downloads every same-size file once to compare content (safe, but slow on 900 files).
+   Left for later: pruning folders emptied by deletions (they stay behind after renames).
+
+   **Read-only first-run plan against the real vault** (`spike/cli.ts plan-real`, nothing
+   executed): 834 local / 870 iCloud files. 831 same-size files would be compared by content
+   (314.8 MB downloaded once, mostly `.obsidian` plugin data: a 60 MB Copilot index, icon zips
+   up to 31 MB); 3 conflicts, all plugin code whose versions differ between devices
+   (`obsidian-tasks-plugin/main.js`, two `styles.css`); 36 downloads that were all iCloud's own
+   `workspace N.json` / `workspace(1).json` duplicates — now ignored by default. Hashing 316 MB
+   locally took 0.6 s; peak RSS 195 MB. The iCloud walk took 6 s once and 37 s another time.
+
+3. **Obsidian shell** — constraints found so far:
+   - Reuse a recent remote scan for watcher-triggered cycles; walk the whole tree only on the
+     poll timer (a walk is 98 listings and took up to 37 s). A stale scan cannot cause false
+     deletions, and every write re-checks the etag first.
+   - Exclude the plugin's own folder (`.obsidian/plugins/icloud-drive-sync/`): its code and
+     `data.json` are per device and per version.
+   - Password sign-in only on an explicit click; never on a timer, never retried after a
+     rejection. It has only ever succeeded from standalone Node — Electron's TLS stack is
+     untested against Apple — so seed `secretStorage` from the trusted spike session for
+     development and only resume.
+   - The first run's content comparison needs a progress display (hundreds of MB).
+   - Writing a download into a note open in the editor needs care; hashing large files must
+     yield to the UI.
+   - Residual race: updates and moves re-check the etag ~1 s before writing, but Apple applies
+     them unconditionally, so an edit on another device inside that second is overwritten.
 3. **Obsidian shell** — settings tab, sign-in and 2FA modals, status bar, conflict view,
    adapter-level scanning of `.obsidian/`, per-path echo suppression for our own writes.
 
