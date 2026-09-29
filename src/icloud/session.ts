@@ -160,6 +160,14 @@ function tryJson(res: HttpResponse): unknown {
 function errorReason(body: unknown): { reason: string; code?: string | number } | undefined {
   if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
   const b = body as Record<string, unknown>;
+  // idmsa reports failures as serviceErrors: [{ code: "-20101", message: "…" }].
+  const serviceError = Array.isArray(b.serviceErrors) ? (b.serviceErrors[0] as Record<string, unknown>) : undefined;
+  if (serviceError && (serviceError.message || serviceError.code)) {
+    return {
+      reason: String(serviceError.message ?? "Apple reported an error"),
+      code: serviceError.code as string | number | undefined,
+    };
+  }
   let reason = b.errorMessage ?? b.reason ?? b.errorReason ?? b.error;
   if (!reason) return undefined;
   if (typeof reason !== "string") reason = "Unknown reason";

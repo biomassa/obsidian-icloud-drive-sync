@@ -341,7 +341,11 @@ export class ICloudAuth {
         await this.loadMfaOptions();
         return;
       }
-      if (e instanceof ApiError) throw new FailedLoginError("Apple ID or password was not accepted");
+      if (e instanceof ApiError) {
+        throw new FailedLoginError(
+          `Apple rejected the sign-in (HTTP ${e.status ?? "?"}, code ${e.code ?? "none"}): ${e.message}`,
+        );
+      }
       throw e;
     }
   }

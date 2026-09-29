@@ -2,7 +2,8 @@
  * Phase-1 spike: prove the TypeScript iCloud client works against Apple, from
  * plain Node, before any plugin code depends on it.
  *
- *   node spike/cli.ts login [--sms]    sign in; 2FA if needed
+ *   node spike/cli.ts login [--sms] [--ask-password]
+ *                                      sign in; 2FA if needed
  *   node spike/cli.ts status           resume from stored tokens only
  *   node spike/cli.ts ls [path]        list a folder (default: the vault)
  *   node spike/cli.ts compare <path>   download a vault file, compare with the local copy
@@ -50,7 +51,7 @@ function keyringPassword(account: string): string {
   try {
     return execFileSync("secret-tool", ["lookup", "service", "obsisync", "username", account], {
       encoding: "utf8",
-    }).replace(/\n$/, "");
+    });
   } catch {
     throw new Error(`no password for ${account} in the keyring (service "obsisync")`);
   }
@@ -62,6 +63,36 @@ function sha(data: Uint8Array): string {
 
 function log(msg: string): void {
   console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
+}
+
+/** Read a line from the terminal without echoing it. */
+function askHidden(prompt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!process.stdin.isTTY) return reject(new Error("--ask-password needs a terminal"));
+    process.stdout.write(prompt);
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    let value = "";
+    const onData = (chunk: Buffer) => {
+      for (const ch of chunk.toString("utf8")) {
+        if (ch === "\r" || ch === "\n") {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off("data", onData);
+          process.stdout.write("\n");
+          return resolve(value);
+        }
+        if (ch === "\u0003") {
+          stdin.setRawMode(false);
+          process.exit(130);
+        }
+        if (ch === "\u007f") value = value.slice(0, -1);
+        else value += ch;
+      }
+    };
+    stdin.on("data", onData);
+  });
 }
 
 async function waitForCode(timeoutMs = 10 * 60_000): Promise<string> {
@@ -105,12 +136,15 @@ async function signedIn(cfg: ObsisyncConfig): Promise<ICloudAuth> {
   return auth;
 }
 
-async function login(cfg: ObsisyncConfig, preferSms: boolean): Promise<void> {
+async function login(cfg: ObsisyncConfig, preferSms: boolean, askPassword: boolean): Promise<void> {
   const auth = await openAuth(cfg);
   log(`signing in as ${cfg.apple_id}`);
   // One attempt only. A rejected password is not retried: repeated SRP failures
   // count toward an Apple ID lockout, and the diagnostic line above says why.
-  const result = await auth.signIn(keyringPassword(cfg.apple_id));
+  const password = askPassword
+    ? await askHidden(`Apple ID password for ${cfg.apple_id}: `)
+    : keyringPassword(cfg.apple_id);
+  const result = await auth.signIn(password);
   if (result.status === "signed-in") {
     log("signed in without a code (stored trust token accepted)");
   } else {
@@ -255,7 +289,7 @@ async function main(): Promise<void> {
   const cfg = obsisyncConfig();
   switch (command) {
     case "login":
-      return login(cfg, rest.includes("--sms"));
+      return login(cfg, rest.includes("--sms"), rest.includes("--ask-password"));
     case "status": {
       const auth = await openAuth(cfg);
       const ok = await auth.resume();
