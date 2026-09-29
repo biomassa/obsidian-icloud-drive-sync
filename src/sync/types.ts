@@ -8,12 +8,33 @@
  * I/O, because macOS writes NFD and a key must match both.
  */
 
-export interface LocalEntry {
+/**
+ * What a local file looked like, cheaply: enough to skip hashing an unchanged
+ * file. Size and mtime alone are not: a different file of the same size and
+ * mtime renamed over the path keeps both (found by the randomized test), so
+ * ctime and the inode are compared too where the filesystem provides them —
+ * git's approach.
+ */
+export interface LocalStamp {
+  size: number;
+  mtimeMs: number;
+  ctimeMs?: number;
+  ino?: number;
+}
+
+export function sameStamp(a: LocalStamp, b: LocalStamp): boolean {
+  return (
+    a.size === b.size &&
+    a.mtimeMs === b.mtimeMs &&
+    (a.ctimeMs === undefined || b.ctimeMs === undefined || a.ctimeMs === b.ctimeMs) &&
+    (a.ino === undefined || b.ino === undefined || a.ino === b.ino)
+  );
+}
+
+export interface LocalEntry extends LocalStamp {
   key: string;
   /** The path as it exists on disk, relative to the vault root. */
   name: string;
-  size: number;
-  mtimeMs: number;
   /** SHA-256 hex of the whole file. Filled in before planning where needed. */
   hash?: string;
   /** When `hash` was computed; becomes `BaseEntry.hashedAtMs`. */
@@ -36,8 +57,10 @@ export interface BaseEntry {
   key: string;
   hash: string;
   size: number;
-  /** Local mtime recorded with `hash`; lets an unchanged file skip hashing. */
+  /** Local stamp recorded with `hash`; lets an unchanged file skip hashing. */
   localMtimeMs: number;
+  localCtimeMs?: number;
+  localIno?: number;
   /**
    * When `hash` was computed. If the file's mtime is within the racy window of
    * this, a same-size edit in the same timestamp tick is possible, so the
@@ -63,9 +86,9 @@ export interface LocalFs {
   /** Every non-ignored file. Must throw, never return a short list, if any folder is unreadable. */
   scan(): Promise<LocalScan>;
   read(key: string): Promise<Uint8Array>;
-  stat(key: string): Promise<{ size: number; mtimeMs: number } | null>;
+  stat(key: string): Promise<LocalStamp | null>;
   /** Write atomically (temp file + rename), creating folders. Returns the stat afterwards. */
-  write(key: string, data: Uint8Array, mtimeMs?: number): Promise<{ size: number; mtimeMs: number }>;
+  write(key: string, data: Uint8Array, mtimeMs?: number): Promise<LocalStamp>;
   rename(from: string, to: string): Promise<void>;
   /** Move to a trash the user can recover from. Never a permanent delete. */
   trash(key: string): Promise<void>;

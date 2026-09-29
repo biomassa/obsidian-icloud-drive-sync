@@ -30,7 +30,7 @@
  * whole file (obsisync hashed 4 KB), equal sizes never mean equal content,
  * and the deletion guard applies in both directions.
  */
-import type { Abort, Action, BaseEntry, LocalEntry, LocalScan, PendingDeletion, Plan, RemoteEntry, RemoteScan } from "./types.ts";
+import { sameStamp, type Abort, type Action, type BaseEntry, type LocalEntry, type LocalScan, type LocalStamp, type PendingDeletion, type Plan, type RemoteEntry, type RemoteScan } from "./types.ts";
 import type { IgnoreFilter } from "./filters.ts";
 
 export interface PlanOptions {
@@ -73,9 +73,13 @@ export type PlanResult = { ok: true; plan: Plan } | { ok: false; abort: Abort };
  * the mtime: an edit in the same timestamp tick as the last hash would
  * otherwise go unseen.
  */
+export function baseStamp(base: BaseEntry): LocalStamp {
+  return { size: base.size, mtimeMs: base.localMtimeMs, ctimeMs: base.localCtimeMs, ino: base.localIno };
+}
+
 export function needsHash(local: LocalEntry, base: BaseEntry | undefined, racyWindowMs: number): boolean {
   if (!base) return true;
-  if (local.size !== base.size || local.mtimeMs !== base.localMtimeMs) return true;
+  if (!sameStamp(local, baseStamp(base))) return true;
   return base.hashedAtMs - base.localMtimeMs < racyWindowMs;
 }
 
@@ -182,7 +186,7 @@ export function planSync(input: PlanInput): PlanResult {
       if (lc && rc) actions.push({ kind: "conflict", key, local: l, remote: r, base: b });
       else if (lc) actions.push({ kind: "upload", key, local: l, remote: r, base: b, reason: "edited here" });
       else if (rc) actions.push({ kind: "download", key, remote: r, local: l, base: b, reason: "edited on iCloud" });
-      else if (l.hash !== undefined && (l.mtimeMs !== b.localMtimeMs || b.hashedAtMs - b.localMtimeMs < opt.racyWindowMs)) {
+      else if (l.hash !== undefined && (!sameStamp(l, baseStamp(b)) || b.hashedAtMs - b.localMtimeMs < opt.racyWindowMs)) {
         actions.push({ kind: "refreshBase", key, local: l, base: b });
       }
     } else if (l && r) {
