@@ -51,7 +51,7 @@ export interface EngineOptions {
 
 export interface CycleResult {
   status: "ok" | "aborted" | "failed";
-  abort?: Abort | { reason: "local-scan-failed" | "remote-scan-failed" | "auth-required"; message: string };
+  abort?: Abort | { reason: "local-scan-failed" | "remote-scan-failed" | "auth-required" | "cancelled"; message: string };
   done: { action: Action; detail?: string }[];
   skipped: { action: Action; why: string }[];
   errors: { action: Action; error: string }[];
@@ -109,6 +109,7 @@ export class SyncEngine {
   private readonly confirmed = new Set<string>();
   private allowManyConflicts = false;
   private running = false;
+  private cancelRequested = false;
   /** The last iCloud scan, kept current with this engine's own remote writes. */
   private remoteCache: { entries: Map<string, RemoteEntry>; skipped: RemoteScan["skipped"]; at: number } | null = null;
 
@@ -183,11 +184,22 @@ export class SyncEngine {
   async runCycle(options: CycleOptions = {}): Promise<CycleResult> {
     if (this.running) throw new Error("a sync cycle is already running");
     this.running = true;
+    this.cancelRequested = false;
     try {
       return await this.cycle(options);
     } finally {
       this.running = false;
+      this.cancelRequested = false;
     }
+  }
+
+  /**
+   * Stop the running cycle after the file in progress. Each step is complete in
+   * itself (a path is recorded only after its own transfer), so stopping
+   * between steps leaves nothing half-done; the rest waits for the next cycle.
+   */
+  cancel(): void {
+    if (this.running) this.cancelRequested = true;
   }
 
   /** Forget the cached iCloud scan; the next cycle walks the tree. */
@@ -301,7 +313,7 @@ export class SyncEngine {
     options.onProgress?.(0, total);
     const worker = async () => {
       for (let action = queue.shift(); action; action = queue.shift()) {
-        if (authFailure) return;
+        if (authFailure || this.cancelRequested) return;
         try {
           const detail = await this.execute(action, state, result, taken, (k) => {
             takenLocal.add(k);
@@ -338,6 +350,10 @@ export class SyncEngine {
       result.status = "aborted";
       result.abort = { reason: "auth-required", message: errorText(authFailure) };
       this.log("error", "iCloud needs you to sign in again; sync stopped");
+    } else if (this.cancelRequested) {
+      result.status = "aborted";
+      result.abort = { reason: "cancelled", message: `stopped with ${queue.length} change(s) left for the next sync` };
+      this.log("info", `Sync stopped; ${queue.length} change(s) left for the next sync`);
     } else if (result.errors.length) {
       result.status = "failed";
     }
@@ -406,6 +422,36 @@ export class SyncEngine {
     });
   }
 
+  /** Conflict where this device's version is newer: it keeps the name, iCloud's goes aside. */
+  private async conflictLocalWins(
+    key: string,
+    aside: string,
+    local: LocalEntry,
+    remote: RemoteEntry,
+    remoteData: Uint8Array,
+    state: SyncState,
+    result: CycleResult,
+  ): Promise<string> {
+    const now = () => this.opt.now();
+    // iCloud's version first, as a new file on both sides, so it is safe
+    // before anything at the original path changes.
+    const asideStamp = await this.local.write(aside, remoteData, remote.modifiedMs || undefined);
+    const asideHash = sha256(remoteData);
+    result.localWrites.push({ key: aside, hash: asideHash });
+    const asideRemote = await this.remote.upload(aside, remoteData, remote.modifiedMs || now());
+    this.noteRemote(aside, asideRemote);
+    this.record(state, aside, { hash: asideHash, size: remoteData.length }, asideStamp, now(), asideRemote);
+    // Then this device's version replaces iCloud's at the original path.
+    const hashedAtMs = now();
+    const data = await this.local.read(key);
+    const hash = sha256(data);
+    const uploaded = await this.remote.upload(key, data, local.mtimeMs, remote);
+    this.noteRemote(key, uploaded);
+    this.record(state, key, { hash, size: data.length }, local, hashedAtMs, uploaded);
+    this.log("warn", `Conflict in ${key}: kept both; this device's newer version keeps the name, iCloud's is ${aside}`);
+    return `kept both; iCloud's older version is ${aside}`;
+  }
+
   private async execute(
     action: Action,
     state: SyncState,
@@ -471,11 +517,16 @@ export class SyncEngine {
           );
           return "identical on both sides";
         }
-        // Keep both. The local version moves aside under a conflict name and is
-        // uploaded as a new file; the iCloud version takes the original path.
+        // Keep both. The newer version keeps the original name; the other is
+        // kept under a conflict name, on both sides. On a first run there is no
+        // record of which side changed, so recency is the only sensible guide
+        // (found on the real vault: iCloud's older copy took the name).
         await this.assertLocalUnchanged(action.local);
         const aside = conflictName(action.key, new Date(now()), taken);
         claim(aside);
+        if (action.local.mtimeMs > action.remote.modifiedMs) {
+          return this.conflictLocalWins(action.key, aside, action.local, action.remote, remoteData, state, result);
+        }
         await this.local.rename(action.key, aside);
         result.localWrites.push({ key: aside, hash: action.local.hash! });
         const written = await this.local.write(action.key, remoteData, action.remote.modifiedMs || undefined);

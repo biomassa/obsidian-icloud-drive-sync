@@ -374,6 +374,10 @@ export class SyncController {
       return;
     }
     this.conflictBurst = null;
+    if (abort?.reason === "cancelled") {
+      this.setStatus({ kind: "paused" });
+      return;
+    }
     if (abort) {
       this.setStatus({ kind: "error", message: "message" in abort ? abort.message : describeAbort(abort) });
       return;
@@ -421,6 +425,7 @@ export class SyncController {
 
   pause(): void {
     this.scheduler?.pause();
+    this.engine?.cancel();
     if (this.status.kind !== "syncing") this.setStatus({ kind: "paused" });
   }
 

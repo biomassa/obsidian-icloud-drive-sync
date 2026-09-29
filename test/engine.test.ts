@@ -275,3 +275,41 @@ test("progress is reported for every action", async () => {
   await s.engine.runCycle({ onProgress: (d, t) => seen.push(`${d}/${t}`) });
   assert.deepEqual(seen, ["0/5", "1/5", "2/5", "3/5", "4/5", "5/5"]);
 });
+
+test("in a conflict the newer version keeps the name; the other is kept aside on both sides", async () => {
+  const s = await synced();
+  s.remote.put("n8.md", "older, from the phone", s.remote.files.get("n8.md")!.docId);
+  s.clock.tick(60_000);
+  s.local.put("n8.md", "newer, typed here"); // mtime after iCloud's
+  await s.engine.runCycle();
+  const aside = [...s.local.files.keys()].find((k) => k.startsWith("n8 (conflict"));
+  assert.ok(aside);
+  assert.equal(s.local.get("n8.md"), "newer, typed here");
+  assert.equal(s.remote.get("n8.md"), "newer, typed here");
+  assert.equal(s.local.get(aside!), "older, from the phone");
+  assert.equal(s.remote.get(aside!), "older, from the phone");
+  s.clock.tick(10_000);
+  const quiet = await s.engine.runCycle();
+  assert.ok(quiet.done.every((d) => d.action.kind === "refreshBase"), "settled");
+});
+
+test("first run: a newer local copy is not demoted to a conflict copy", async () => {
+  const s = setup();
+  s.remote.put("settings.json", '{"old":true}');
+  s.clock.tick(60_000);
+  s.local.put("settings.json", '{"new":true, "more":1}');
+  await s.engine.runCycle();
+  assert.equal(s.local.get("settings.json"), '{"new":true, "more":1}');
+  assert.equal(s.remote.get("settings.json"), '{"new":true, "more":1}');
+});
+
+test("cancel stops between files; the rest is done by the next sync", async () => {
+  const s = setup();
+  for (let i = 0; i < 10; i++) s.local.put(`c${i}.md`, `c${i}`);
+  const r = await s.engine.runCycle({ onProgress: (done) => done === 3 && s.engine.cancel() });
+  assert.equal(r.abort?.reason, "cancelled");
+  assert.equal(s.remote.files.size, 3);
+  const next = await s.engine.runCycle();
+  assert.equal(next.status, "ok");
+  sameTrees(s.local, s.remote);
+});
