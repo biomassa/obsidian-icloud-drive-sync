@@ -1,7 +1,13 @@
 node_modules/
 main.js
 *.log
+# Claude Code and other AI-assistant files, at any depth
 CLAUDE.md
+CLAUDE.local.md
+**/CLAUDE.md
+**/CLAUDE.local.md
+.claude/
+.mcp.json
 AGENTS.md
 # Spike state: session tokens and cookies. Never commit.
 .spike/
