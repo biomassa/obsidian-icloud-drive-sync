@@ -67,16 +67,29 @@ obsisync's `_assert_secure_keyring()` does.
      and keeps the id, with no temp name and no Recently Deleted entry. It is unconditional —
      `etag`, `document_etag` and `if_match` are all ignored — so the executor re-reads the etag
      just before updating and skips if it moved (≈1 s unguarded window, last-writer-wins).
-2. **Sync engine in pure TypeScript** (no Obsidian imports; injected fs and remote):
-   - plan (base state + local scan + remote scan → actions), check guards on the whole plan,
-     then execute; a file is recorded synced only after its transfer succeeds
-   - full-content hash with a size+mtime pre-check; no same-size shortcut
-   - replace = upload first, trash second (never permanent delete)
-   - bulk-deletion guard in **both** directions; abort on any unreadable local folder
-   - conflicts always keep both versions as files
-   - NFC-normalized keys; rename detection from vault events
-   - re-authenticate only on 421/450, never every cycle; on 2FA, pause and notify
-   - port obsisync's `test_regressions.py` as a decision table, files larger than 4 KB included
+2. **Sync engine in pure TypeScript** — done (`src/sync/`, no Obsidian imports):
+   - [x] pure planner (`planner.ts`), guards on the whole plan, then an executor (`engine.ts`)
+         that re-checks each local file right before acting and records only what it actually
+         read or wrote; a path is marked synced only after its own transfer succeeded
+   - [x] whole-file SHA-256; the cheap pre-check compares size, mtime, ctime and inode, with a
+         racy-clean window; no same-size shortcut
+   - [x] replace = in-place update guarded by an etag re-read; trash verified from the response;
+         new files create-if-absent; Apple's zone-lock rejections retried
+   - [x] deletion guard in both directions (> 3 parked, persisted, false alarms clear, a pending
+         question absorbs later deletions); any unreadable folder or truncated listing aborts
+   - [x] conflicts keep both versions as files, on both sides
+   - [x] NFC keys; NFC/case collisions and symlinks refused *and protected*
+   - [x] renames both ways: remote by document id (with a content check, since a move changes the
+         etag), local by unique content hash
+   - [x] an expired session stops the cycle at once; re-auth is the plugin shell's job
+   - [x] tests: decision table incl. obsisync's regressions, executor races, real-filesystem
+         adapter, and a randomized two-sided no-loss test (20,000 seeds; found 4 bugs)
+   - [x] live end-to-end (`spike/cli.ts e2e`): upload, same-size edit, >4 KB append, other-device
+         edit, renames both ways, conflict, deletions both ways, quiet cycles — trees identical
+         after every step
+
+   Left for later: pruning folders emptied by deletions; the first run against an existing
+   vault downloads every same-size file once to compare content (safe, but slow on 900 files).
 3. **Obsidian shell** — settings tab, sign-in and 2FA modals, status bar, conflict view,
    adapter-level scanning of `.obsidian/`, per-path echo suppression for our own writes.
 

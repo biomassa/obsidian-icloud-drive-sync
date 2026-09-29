@@ -24,9 +24,9 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 
@@ -35,6 +35,13 @@ import { b64encode } from "../src/icloud/bytes.ts";
 import { DriveClient, isFolderLike, type DriveItem } from "../src/icloud/drive.ts";
 import { nodeTransport, type Transport } from "../src/icloud/http.ts";
 import { FileSessionStore } from "../src/icloud/store.ts";
+import { SyncEngine, describe } from "../src/sync/engine.ts";
+import { IgnoreFilter } from "../src/sync/filters.ts";
+import { ICloudRemote } from "../src/sync/icloud-remote.ts";
+import { NodeLocalFs } from "../src/sync/node-local.ts";
+import { FileStateStore } from "../src/sync/state.ts";
+import { mkdtemp, mkdir as mkdirp, writeFile as writeFileP, rename as renameP, rm as rmP, readFile as readFileP } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 const STATE_DIR = join(homedir(), ".local/share/icloud-obsi-spike");
 const CODE_FILE = join(STATE_DIR, "code");
@@ -587,6 +594,125 @@ async function semantics3(cfg: ObsisyncConfig): Promise<void> {
   }
 }
 
+/**
+ * The real engine, end to end, between a throwaway local folder and a
+ * throwaway iCloud folder. Every step is verified by comparing both trees byte
+ * for byte, with the iCloud side read back through fresh downloads.
+ */
+async function e2e(cfg: ObsisyncConfig): Promise<void> {
+  const auth = await signedIn(cfg);
+  const drive = new DriveClient(auth);
+  const root = await drive.root();
+  const NAME = "icloudsync-e2e-test";
+  if ((await drive.list(root)).some((c) => c.name === NAME)) throw new Error(`${NAME} already exists; remove it first`);
+  await drive.mkdir(root, NAME);
+  const localRoot = await mkdtemp(join(tmpdir(), "icloudsync-e2e-"));
+  const statePath = join(STATE_DIR, `e2e-state-${Date.now()}.json`);
+  const filter = new IgnoreFilter();
+  const local = new NodeLocalFs({ root: localRoot, filter });
+  const remote = new ICloudRemote({ drive, vaultPath: [NAME], filter });
+  const engine = new SyncEngine({
+    local,
+    remote,
+    store: new FileStateStore(statePath),
+    filter,
+    log: (level, m) => log(`    [${level}] ${m}`),
+  });
+  const other = new ICloudRemote({ drive, vaultPath: [NAME], filter }); // "another device"
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const put = async (rel: string, text: string) => {
+    await mkdirp(join(localRoot, dirname(rel)), { recursive: true });
+    await writeFileP(join(localRoot, rel), text);
+  };
+  let failures = 0;
+  const cycle = async (label: string) => {
+    const t = Date.now();
+    const r = await engine.runCycle();
+    log(`${label}: ${r.status}${r.abort ? ` (${JSON.stringify(r.abort)})` : ""} in ${Date.now() - t} ms — ` +
+      `${r.done.map((d) => describe(d.action)).join("; ") || "nothing to do"}` +
+      `${r.skipped.length ? ` | skipped: ${r.skipped.map((s) => `${describe(s.action)} (${s.why})`).join("; ")}` : ""}` +
+      `${r.errors.length ? ` | ERRORS: ${r.errors.map((e) => `${describe(e.action)}: ${e.error}`).join("; ")}` : ""}`);
+    if (r.errors.length || r.status === "aborted") failures++;
+    return r;
+  };
+  const compareTrees = async (label: string) => {
+    const l = await local.scan();
+    const r = await other.scan();
+    const diffs: string[] = [];
+    for (const k of new Set([...l.entries.keys(), ...r.entries.keys()])) {
+      const le = l.entries.get(k);
+      const re = r.entries.get(k);
+      if (!le || !re) {
+        diffs.push(`${k}: only ${le ? "local" : "iCloud"}`);
+        continue;
+      }
+      const lb = await local.read(k);
+      const rb = await other.download(re);
+      if (Buffer.compare(Buffer.from(lb), Buffer.from(rb)) !== 0) diffs.push(`${k}: content differs`);
+    }
+    log(`  ${label}: ${l.entries.size} files each side — ${diffs.length ? `DIFFERENT: ${diffs.join(", ")}` : "IDENTICAL"}`);
+    if (diffs.length) failures++;
+  };
+
+  try {
+    log("step 1: a new local vault is uploaded");
+    await put(".obsidian/app.json", "{}");
+    await put(".obsidian/workspace.json", "{\"ignored\": true}");
+    await put("Welcome.md", "# Welcome\n");
+    await put("Notes/todo.md", "- [ ] buy milk\n");
+    await put("Notes/long.md", "A".repeat(6000) + "\n");
+    await put("Notes/Deep/idea.md", "an idea\n");
+    await put("Attachments/empty.md", "");
+    await cycle("cycle 1");
+    await compareTrees("after step 1");
+
+    log("step 2: edits and renames on both sides");
+    await put("Notes/todo.md", "- [x] buy milk\n"); // same size, one byte differs
+    await put("Notes/long.md", "A".repeat(6000) + "\nappended past 4 KB\n");
+    await renameP(join(localRoot, "Notes/Deep/idea.md"), join(localRoot, "Notes/idea-renamed.md"));
+    const snap = await other.scan();
+    await other.upload("Welcome.md", enc("# Welcome, from the phone\n"), Date.now(), snap.entries.get("Welcome.md"));
+    const emptyItem = snap.entries.get("Attachments/empty.md")!;
+    await drive.rename(emptyItem.handle as DriveItem, "renamed-on-phone.md");
+    await cycle("cycle 2");
+    await compareTrees("after step 2");
+
+    log("step 3: the same note edited on both sides");
+    await put("Welcome.md", "# Welcome, edited on this computer\n");
+    const snap3 = await other.scan();
+    await other.upload("Welcome.md", enc("# Welcome, edited on the phone again\n"), Date.now(), snap3.entries.get("Welcome.md"));
+    await cycle("cycle 3");
+    await compareTrees("after step 3");
+
+    log("step 4: one deletion on each side");
+    await rmP(join(localRoot, "Notes/todo.md"));
+    const snap4 = await other.scan();
+    await other.trash(snap4.entries.get("Notes/long.md")!);
+    await cycle("cycle 4");
+    await compareTrees("after step 4");
+    log(`  local .trash holds: ${readdirSync(join(localRoot, ".trash"), { recursive: true }).join(", ")}`);
+
+    log("step 5: a quiet cycle does nothing");
+    await new Promise((r) => setTimeout(r, 2500)); // outlast the racy window
+    await cycle("cycle 5");
+    const quiet = await cycle("cycle 6");
+    if (quiet.done.some((d) => d.action.kind !== "refreshBase")) {
+      log("  UNEXPECTED: a quiet cycle transferred something");
+      failures++;
+    }
+    const state = JSON.parse(await readFileP(statePath, "utf8"));
+    log(`  state file: ${state.base.length} tracked, ${state.pendingDeletions.length} pending`);
+  } finally {
+    await drive.trash((await drive.list(root)).find((c) => c.name === NAME)!).catch((e) => log(`cleanup failed: ${e}`));
+    await rmP(localRoot, { recursive: true, force: true });
+    await rmP(statePath, { force: true });
+    log(`cleanup: ${NAME} moved to Recently Deleted; local folder and state removed`);
+    await auth.session.persist();
+  }
+  log(failures ? `E2E: ${failures} problem(s)` : "E2E: all steps verified");
+  if (failures) process.exitCode = 1;
+}
+
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   const cfg = obsisyncConfig();
@@ -613,6 +739,8 @@ async function main(): Promise<void> {
       return semantics2(cfg);
     case "semantics3":
       return semantics3(cfg);
+    case "e2e":
+      return e2e(cfg);
     default:
       console.log("usage: node spike/cli.ts login [--sms] | status | ls [path] | compare <path> | write-test");
   }

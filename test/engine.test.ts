@@ -227,3 +227,10 @@ test("parallel transfers reach the same result", async () => {
   sameTrees(s.local, s.remote);
   assert.equal(s.local.files.size, 80);
 });
+
+test("Apple's zone-lock rejection is recognised as retryable", async () => {
+  const { isZoneLockConflict } = await import("../src/sync/icloud-remote.ts");
+  const { ApiError } = await import("../src/icloud/errors.ts");
+  assert.ok(isZoneLockConflict(new ApiError("Sync zone CAS Op-Lock failed. There was a concurrent write and this operation was rejected. Retry request...")));
+  assert.ok(!isZoneLockConflict(new ApiError("Uniqueness constraint violation. Rejecting update")));
+});

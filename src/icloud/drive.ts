@@ -271,7 +271,7 @@ export class DriveClient {
     return { documentId: String(slot.document_id), signature };
   }
 
-  /** POST a raw update/documents body. For probing Apple's semantics only. */
+  /** POST a raw update/documents body: commit staged content to a document. */
   async updateDocumentsRaw(zone: string, body: Json): Promise<Json> {
     const res = await this.auth.session.request("POST", `${this.documentRoot}/ws/${zone}/update/documents`, {
       params: this.params,
