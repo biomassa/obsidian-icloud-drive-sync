@@ -5,3 +5,5 @@ CLAUDE.md
 AGENTS.md
 # Spike state: session tokens and cookies. Never commit.
 .spike/
+dist/
+*.zip
