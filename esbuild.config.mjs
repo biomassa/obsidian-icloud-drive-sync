@@ -12,7 +12,17 @@ const external = [
   ...builtinModules.map((m) => `node:${m}`),
 ];
 
+// Obsidian gives plugins its own require(). Bare builtin names ("fs") are the
+// form every desktop plugin uses; the "node:" prefix is rewritten to match.
+const bareNodeBuiltins = {
+  name: "bare-node-builtins",
+  setup(build) {
+    build.onResolve({ filter: /^node:/ }, (args) => ({ path: args.path.slice(5), external: true }));
+  },
+};
+
 const ctx = await esbuild.context({
+  plugins: [bareNodeBuiltins],
   entryPoints: ["src/main.ts"],
   bundle: true,
   external,
