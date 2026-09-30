@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/**/*.test.ts\"",
     "spike": "node spike/cli.ts",
-    "package": "node tools/package.mjs"
+    "package": "node tools/package.mjs",
+    "smoke": "node tools/smoke-bundle.cjs"
   },
   "license": "MIT",
   "devDependencies": {
