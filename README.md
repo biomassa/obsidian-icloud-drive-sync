@@ -25,7 +25,7 @@ Obsidian on your iPhone, iPad or Mac then shows the same notes.
 Apple devices sync iCloud Drive vaults without a plugin. Linux has no iCloud client. This plugin
 connects to iCloud Drive from Obsidian.
 
-**Status:** version 0.1.0. It is in daily use on Linux. It is not tested on Windows. Make a backup
+**Status:** early version. For the current version, refer to the [releases](../../releases). It is in daily use on Linux. It is not tested on Windows. Make a backup
 of your vault before the first sync.
 
 ## Functions
