@@ -400,3 +400,26 @@ test("an unreadable file that still exists still aborts the cycle", async () => 
   const r = await s.engine.runCycle();
   assert.equal(r.abort?.reason, "local-scan-failed");
 });
+
+test("a temporary iCloud server error is a warning, and nothing changes", async () => {
+  const { ApiError } = await import("../src/icloud/errors.ts");
+  const logs: string[] = [];
+  const clock = new Clock();
+  const local = new FakeLocal(clock);
+  const remote = new FakeRemote(clock);
+  local.put("a.md", "a");
+  const engine = new SyncEngine({
+    local, remote, store: new MemoryStateStore(), filter: new IgnoreFilter(),
+    log: (level, m) => logs.push(`${level}: ${m}`), options: { now: clock.now },
+  });
+  remote.scanError = new ApiError("Bad Gateway", 502);
+  const r = await engine.runCycle();
+  assert.equal(r.abort?.reason, "remote-temporary");
+  assert.deepEqual(logs, ["warn: iCloud had a temporary server error (502 Bad Gateway). Nothing was changed. The next check tries again."]);
+  assert.equal(remote.files.size, 0);
+  remote.scanError = new ApiError("Internal Server Error", 500);
+  assert.equal((await engine.runCycle()).abort?.reason, "remote-scan-failed", "500 is not treated as temporary");
+  remote.scanError = null;
+  assert.equal((await engine.runCycle()).status, "ok");
+  assert.equal(remote.get("a.md"), "a");
+});

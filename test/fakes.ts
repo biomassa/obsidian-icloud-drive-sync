@@ -124,6 +124,8 @@ export class FakeRemote implements Remote {
   failDownload = new Set<string>();
   authFailAfter = Infinity;
   truncated = false;
+  /** Thrown by the next scans, e.g. an ApiError with a 502 status. */
+  scanError: Error | null = null;
   calls = 0;
   /** Runs once during the next download: simulates a concurrent local edit. */
   onDownload: ((key: string) => void) | null = null;
@@ -169,6 +171,7 @@ export class FakeRemote implements Remote {
   async scan(): Promise<RemoteScan> {
     this.tick();
     if (this.truncated) throw new Error("listing of Projects returned 3 of 30 items");
+    if (this.scanError) throw this.scanError;
     const entries = new Map<string, RemoteEntry>();
     for (const [key, f] of this.files) if (!this.filter.ignores(key)) entries.set(key, this.entry(key, f));
     const hook = this.afterScan;

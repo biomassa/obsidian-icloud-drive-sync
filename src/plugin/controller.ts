@@ -414,6 +414,10 @@ export class SyncController {
       return;
     }
     this.conflictBurst = null;
+    if (abort?.reason === "remote-temporary") {
+      this.setStatus({ kind: "attention", message: "iCloud had a temporary server error. The next check tries again." });
+      return;
+    }
     if (abort?.reason === "cancelled") {
       this.setStatus({ kind: "paused" });
       return;

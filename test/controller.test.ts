@@ -217,3 +217,20 @@ test("the enabled-plugins merge keeps iCloud's list and adds this vault's", () =
   assert.equal(mergePluginLists(enc({ not: "a list" }), enc([])), null);
   assert.equal(mergePluginLists(new TextEncoder().encode("{broken"), enc([])), null);
 });
+
+test("a temporary iCloud server error shows as a warning, not an error", async () => {
+  const { ApiError } = await import("../src/icloud/errors.ts");
+  const h = harness();
+  await h.controller.signIn("pw");
+  await h.timers.advance(10);
+  h.remote.scanError = new ApiError("Service Unavailable", 503);
+  h.controller.syncNow();
+  await h.timers.advance(10);
+  assert.equal(h.controller.status.kind, "attention");
+  assert.equal((h.controller.status as { message: string }).message, "iCloud had a temporary server error. The next check tries again.");
+  h.remote.scanError = null;
+  h.controller.syncNow();
+  await h.timers.advance(10);
+  assert.equal(h.controller.status.kind, "idle");
+  await h.controller.stop();
+});

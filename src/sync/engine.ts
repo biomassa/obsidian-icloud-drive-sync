@@ -15,7 +15,14 @@
  */
 import { createHash } from "node:crypto";
 
-import { AuthRequiredError } from "../icloud/errors.ts";
+import { ApiError, AuthRequiredError } from "../icloud/errors.ts";
+
+/** HTTP statuses that mean "the server is temporarily unavailable": not a fault here. */
+const TEMPORARY_SERVER_ERRORS: Record<number, string> = {
+  502: "Bad Gateway",
+  503: "Service Unavailable",
+  504: "Gateway Timeout",
+};
 import type { IgnoreFilter } from "./filters.ts";
 import { needsHash, planSync, type PlanOptions } from "./planner.ts";
 import {
@@ -69,7 +76,12 @@ export interface FreshVaultPolicy {
 
 export interface CycleResult {
   status: "ok" | "aborted" | "failed";
-  abort?: Abort | { reason: "local-scan-failed" | "remote-scan-failed" | "auth-required" | "cancelled"; message: string };
+  abort?:
+    | Abort
+    | {
+        reason: "local-scan-failed" | "remote-scan-failed" | "remote-temporary" | "auth-required" | "cancelled";
+        message: string;
+      };
   done: { action: Action; detail?: string }[];
   skipped: { action: Action; why: string }[];
   errors: { action: Action; error: string }[];
@@ -271,6 +283,13 @@ export class SyncEngine {
     } catch (e) {
       this.remoteCache = null;
       result.status = "aborted";
+      const temporary = e instanceof ApiError && e.status !== undefined ? TEMPORARY_SERVER_ERRORS[e.status] : undefined;
+      if (temporary) {
+        const message = `iCloud had a temporary server error (${(e as ApiError).status} ${temporary}). Nothing was changed. The next check tries again.`;
+        result.abort = { reason: "remote-temporary", message };
+        this.log("warn", message);
+        return result;
+      }
       result.abort =
         e instanceof AuthRequiredError
           ? { reason: "auth-required", message: errorText(e) }
