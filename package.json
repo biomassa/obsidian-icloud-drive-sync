@@ -1,6 +1,6 @@
 {
   "name": "icloud-drive-sync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Obsidian plugin that syncs a vault with iCloud Drive on Linux and Windows",
   "type": "module",

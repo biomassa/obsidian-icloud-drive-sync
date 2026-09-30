@@ -1,7 +1,7 @@
 {
   "id": "icloud-drive-sync",
   "name": "iCloud Drive Sync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.11.4",
   "description": "Two-way sync between this vault and a vault in iCloud Drive, for Linux and Windows.",
   "author": "biomassa",
