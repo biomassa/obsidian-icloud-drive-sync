@@ -122,6 +122,9 @@ stop obsisync first. The plugin does not start while obsisync is set up for the 
 - To use a command, push Ctrl+P (Cmd+P on a Mac keyboard). The commands are Sync now, Show status,
   Pause syncing and Resume syncing.
 - Pause stops the sync after the current file. The next sync does the remaining files.
+- The plugin keeps a log of its activity. The log contains the latest 1000 entries. It stays after a
+  restart. To see the log file, go to Settings > iCloud Drive Sync > Activity log and select Show in
+  file manager. To delete all entries, select Clear log.
 
 ### Files that do not sync
 
@@ -148,9 +151,11 @@ stop obsisync first. The plugin does not start while obsisync is set up for the 
   - If the secret storage is not encrypted, the plugin does not keep the session.
 - The settings file of the plugin is in the vault. It contains only your Apple ID email address and
   your settings. A test makes sure that it cannot contain secret data.
-- The plugin records the sync state of each device outside the vault:
+- The plugin records the sync state and the activity log of each device outside the vault:
   - Linux: `~/.local/share/icloud-drive-sync/`
   - Windows: `%LOCALAPPDATA%\icloud-drive-sync\`
+
+  The activity log contains file names and error messages. It does not contain passwords or tokens.
 - The plugin connects only to the iCloud servers of Apple. It does not send telemetry.
 
 A session usually expires after some weeks or months. The plugin then tries to renew the session with
