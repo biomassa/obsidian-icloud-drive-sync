@@ -17,26 +17,6 @@
 > old or broken. If you cannot restore your notes, you do not have a backup.
 > If you do not have a tested backup, do not use this plugin.
 
-## Disclaimer of liability
-
-This plugin is free software. It is supplied "as is", without warranty of any kind, express or
-implied. The [MIT license](LICENSE) gives the full terms.
-
-**You use this plugin at your own risk. The use of this plugin is your responsibility, not the
-responsibility of the author.**
-
-The author is not liable for any loss or damage that comes from the use of this plugin, or from an
-inability to use it. This includes, but is not limited to:
-
-- loss, damage or corruption of notes, attachments, settings or other data;
-- loss of data in iCloud Drive or on any device;
-- a locked or disabled Apple ID;
-- any direct, indirect, incidental or consequential damage.
-
-If you do not agree to these conditions, do not install or use this plugin.
-
----
-
 # iCloud Drive Sync for Obsidian
 
 This plugin syncs an Obsidian vault on Linux or Windows with the same vault in iCloud Drive.
@@ -235,3 +215,21 @@ npm run package   # makes dist/icloud-drive-sync-<version>.zip
 
 MIT. Refer to [LICENSE](LICENSE). The iCloud client (`src/icloud/`) is a TypeScript port of code from
 pyicloud. The pyicloud MIT license is in [LICENSE.pyicloud](LICENSE.pyicloud).
+
+## Disclaimer of liability
+
+This plugin is free software. It is supplied "as is", without warranty of any kind, express or
+implied. The [MIT license](LICENSE) gives the full terms.
+
+**You use this plugin at your own risk. The use of this plugin is your responsibility, not the
+responsibility of the author.**
+
+The author is not liable for any loss or damage that comes from the use of this plugin, or from an
+inability to use it. This includes, but is not limited to:
+
+- loss, damage or corruption of notes, attachments, settings or other data;
+- loss of data in iCloud Drive or on any device;
+- a locked or disabled Apple ID;
+- any direct, indirect, incidental or consequential damage.
+
+If you do not agree to these conditions, do not install or use this plugin.
