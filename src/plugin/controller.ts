@@ -23,7 +23,9 @@ import { SyncScheduler, type Timers, type Trigger } from "../sync/scheduler.ts";
 import { FileStateStore } from "../sync/state.ts";
 import type { LocalFs, PendingDeletion, Remote, StateStore } from "../sync/types.ts";
 import { toKey } from "../sync/filters.ts";
+import { PersistentLog, type LogLine } from "./log-store.ts";
 import {
+  logFilePath,
   SecretSessionStore,
   obsisyncManages,
   secretStorageEncryption,
@@ -55,11 +57,7 @@ export interface ControllerUI {
   askCode(prompt: CodePrompt): Promise<string | null>;
 }
 
-export interface LogLine {
-  at: number;
-  level: LogLevel;
-  message: string;
-}
+export type { LogLine } from "./log-store.ts";
 
 export interface ControllerDeps {
   settings: () => Settings;
@@ -74,6 +72,8 @@ export interface ControllerDeps {
   openRemote?: (auth: ICloudAuth, settings: Settings, filter: IgnoreFilter) => Promise<Remote>;
   openLocal?: (root: string, filter: IgnoreFilter) => LocalFs;
   stateStore?: StateStore;
+  /** Defaults to a file next to the sync state; tests pass an in-memory one. */
+  logStore?: PersistentLog;
   timers?: Timers;
   skipEnvironmentChecks?: boolean;
 }
@@ -89,7 +89,8 @@ export class SyncController {
   private lastParkedSignature = "";
 
   status: Status = { kind: "starting" };
-  readonly log: LogLine[] = [];
+  private readonly logStore: PersistentLog;
+  private logLoaded = false;
   lastResult: CycleResult | null = null;
   pendingDeletions: PendingDeletion[] = [];
   conflictBurst: { count: number; keys: string[] } | null = null;
@@ -97,6 +98,26 @@ export class SyncController {
 
   constructor(deps: ControllerDeps) {
     this.deps = deps;
+    this.logStore = deps.logStore ?? new PersistentLog(logFilePath(deps.vaultRoot), { limit: 1000 });
+  }
+
+  /** The activity log, oldest first: the latest 1000 entries, kept across restarts. */
+  get log(): LogLine[] {
+    return this.logStore.entries;
+  }
+
+  /** Where the log is stored, or null when it is kept in memory only. */
+  get logPath(): string | null {
+    return this.logStore.path;
+  }
+
+  async clearLog(): Promise<void> {
+    await this.logStore.clear();
+  }
+
+  /** Write the log to disk now, so the file exists and is current (for "show in file manager"). */
+  async flushLog(): Promise<void> {
+    await this.logStore.flush();
   }
 
   onStatus(listener: (s: Status) => void): () => void {
@@ -111,8 +132,7 @@ export class SyncController {
   }
 
   private record(level: LogLevel, message: string): void {
-    this.log.push({ at: Date.now(), level, message });
-    if (this.log.length > 300) this.log.splice(0, this.log.length - 300);
+    this.logStore.add({ at: Date.now(), level, message });
   }
 
   get isSignedIn(): boolean {
@@ -156,6 +176,10 @@ export class SyncController {
 
   /** On plugin load: resume a stored session if there is one; never prompts. */
   async start(): Promise<void> {
+    if (!this.logLoaded) {
+      this.logLoaded = true;
+      await this.logStore.load().catch(() => undefined);
+    }
     const settings = this.deps.settings();
     const blocked = await this.blocker(settings);
     if (blocked) return this.setStatus({ kind: "blocked", message: blocked });
@@ -338,6 +362,7 @@ export class SyncController {
 
   async stop(): Promise<void> {
     await this.stopSync();
+    await this.logStore.flush().catch(() => undefined);
   }
 
   // ── running cycles ─────────────────────────────────────────────────────────

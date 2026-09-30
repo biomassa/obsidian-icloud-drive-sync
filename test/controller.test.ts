@@ -11,6 +11,7 @@ import { SESSION_SECRET_ID, type SecretStorageLike } from "../src/plugin/environ
 import { DEFAULT_SETTINGS, sanitizeSettings, pluginIgnorePatterns, type Settings } from "../src/plugin/settings.ts";
 import { IgnoreFilter } from "../src/sync/filters.ts";
 import { MemoryStateStore } from "../src/sync/state.ts";
+import { PersistentLog } from "../src/plugin/log-store.ts";
 import { FakeApple } from "./fake-apple.ts";
 import { Clock, FakeLocal, FakeRemote } from "./fakes.ts";
 import { VirtualTimers } from "./virtual-timers.ts";
@@ -61,6 +62,7 @@ function harness(opts: {
     openRemote: async () => remote,
     openLocal: () => local,
     stateStore: new MemoryStateStore(),
+    logStore: new PersistentLog(null),
     timers,
     skipEnvironmentChecks: true,
     platform: opts.platform ?? "linux",

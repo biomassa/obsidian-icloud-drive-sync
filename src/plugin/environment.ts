@@ -27,6 +27,12 @@ export function stateFilePath(vaultRoot: string): string {
   return join(dataDir(), `state-${id}.json`);
 }
 
+/** The activity log for one vault on this machine, next to its sync state. */
+export function logFilePath(vaultRoot: string): string {
+  const id = createHash("sha256").update(vaultRoot).digest("hex").slice(0, 16);
+  return join(dataDir(), `log-${id}.jsonl`);
+}
+
 /** obsisync's config, if it is installed. */
 function obsisyncConfigPath(): string {
   if (process.platform === "win32") {

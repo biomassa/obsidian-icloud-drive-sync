@@ -31,6 +31,12 @@ export function statusText(s: Status): { text: string; tooltip: string } {
   }
 }
 
+/** Open the system file manager with this file selected (Electron's shell). */
+export function showInFileManager(path: string): void {
+  const { shell } = require("electron") as { shell: { showItemInFolder(fullPath: string): void } };
+  shell.showItemInFolder(path);
+}
+
 export function ago(at: number): string {
   const s = Math.round((Date.now() - at) / 1000);
   if (s < 60) return "just now";
@@ -459,6 +465,39 @@ export class SettingsTab extends PluginSettingTab {
           await this.host.saveSettings(true);
         });
       });
+    new Setting(containerEl).setHeading().setName("Activity log");
+    const logPath = controller.logPath;
+    new Setting(containerEl)
+      .setName("Log file")
+      .setDesc(
+        logPath
+          ? `The latest ${1000} entries. The file is outside the vault and does not sync: ${logPath}`
+          : "The log is kept in memory only.",
+      )
+      .addButton((b) =>
+        b
+          .setButtonText("Show in file manager")
+          .setDisabled(!logPath)
+          .onClick(async () => {
+            try {
+              await controller.flushLog();
+              showInFileManager(logPath!);
+            } catch (e) {
+              new Notice(`Could not show the log file: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }),
+      )
+      .addButton((b) =>
+        b
+          .setButtonText("Clear log")
+          .setWarning()
+          .onClick(async () => {
+            await controller.clearLog();
+            new Notice("Activity log cleared");
+          }),
+      );
+
+    new Setting(containerEl).setHeading().setName("Network");
     new Setting(containerEl)
       .setName("Use IPv4 only")
       .setDesc("For networks that advertise IPv6 but do not route it, where every connection stalls.")
