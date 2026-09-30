@@ -280,7 +280,7 @@ export class SyncEngine {
     }
 
     try {
-      await this.hashWhereNeeded(localScan.entries.values(), state.base);
+      await this.hashWhereNeeded(localScan.entries, state.base);
     } catch (e) {
       // An unreadable file must not look like a deleted one.
       result.status = "aborted";
@@ -390,12 +390,33 @@ export class SyncEngine {
     return result;
   }
 
-  private async hashWhereNeeded(entries: Iterable<LocalEntry>, base: Map<string, BaseEntry>): Promise<void> {
-    const todo = [...entries].filter((l) => l.hash === undefined && needsHash(l, base.get(l.key), this.opt.racyWindowMs));
+  /**
+   * Hash the files the planner needs hashed. A file deleted between the scan
+   * and its read is dropped from the scan: it is genuinely gone, so the plan
+   * treats it as deleted (found on the real vault: a daily note created and
+   * deleted within seconds aborted the whole cycle). Any other read failure,
+   * such as a permission error, still aborts, because a file that is there
+   * but unreadable must never look deleted.
+   */
+  private async hashWhereNeeded(entries: Map<string, LocalEntry>, base: Map<string, BaseEntry>): Promise<void> {
+    const todo = [...entries.values()].filter(
+      (l) => l.hash === undefined && needsHash(l, base.get(l.key), this.opt.racyWindowMs),
+    );
     const worker = async () => {
       for (let l = todo.shift(); l; l = todo.shift()) {
         const hashedAtMs = this.opt.now();
-        l.hash = sha256(await this.local.read(l.key));
+        let data: Uint8Array;
+        try {
+          data = await this.local.read(l.key);
+        } catch (e) {
+          if (isMissingFile(e) && (await this.local.stat(l.key)) === null) {
+            entries.delete(l.key);
+            this.log("debug", `${l.key} was deleted during the scan; treated as deleted`);
+            continue;
+          }
+          throw e;
+        }
+        l.hash = sha256(data);
         l.hashedAtMs = hashedAtMs;
       }
     };
@@ -698,6 +719,11 @@ export class SyncEngine {
       }
     }
   }
+}
+
+function isMissingFile(e: unknown): boolean {
+  const code = (e as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR" || (e instanceof Error && /^ENOENT\b/.test(e.message));
 }
 
 function errorText(e: unknown): string {

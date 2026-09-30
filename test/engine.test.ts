@@ -378,3 +378,25 @@ test("a vault that already holds notes is not treated as fresh", async () => {
   assert.equal(local.get(".obsidian/app.json"), '{"newer":22}', "the newer version keeps the name");
   assert.ok([...local.files.keys()].some((k) => k.startsWith(".obsidian/app (conflict")), "and iCloud's is kept aside");
 });
+
+test("a file deleted between the scan and its read is treated as deleted, not as an error", async () => {
+  const s = await synced(10);
+  s.local.put("Daily/2026-09-30.md", "today");
+  s.local.afterScan = () => s.local.files.delete("Daily/2026-09-30.md"); // created, then deleted at once
+  const r = await s.engine.runCycle();
+  assert.equal(r.status, "ok", `no abort: ${JSON.stringify(r.abort)}`);
+  assert.equal(s.remote.get("Daily/2026-09-30.md"), undefined, "nothing uploaded for it");
+  sameTrees(s.local, s.remote);
+});
+
+test("an unreadable file that still exists still aborts the cycle", async () => {
+  const s = await synced(10);
+  s.local.put("locked.md", "secret");
+  const read = s.local.read.bind(s.local);
+  s.local.read = async (key) => {
+    if (key === "locked.md") throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    return read(key);
+  };
+  const r = await s.engine.runCycle();
+  assert.equal(r.abort?.reason, "local-scan-failed");
+});
